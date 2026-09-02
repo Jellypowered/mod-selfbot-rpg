@@ -1,0 +1,20 @@
+# mod-selfbot-rpg
+#
+# The first feature slice is a self-bot-only gathering farming mode. It is
+# controlled by the companion addon or by .sbrpg commands.
+#
+# Enable = 1
+#   Present for deployment compatibility. The initial implementation is enabled
+#   when loaded; future slices will use this as the module-wide feature gate.
+[worldserver]
+
+SelfBotRpg.Enable = 1
+
+# Print route decisions to the self-bot's system chat and the worldserver debug
+# log. Useful for diagnosing unreachable or respawning nodes.
+SelfBotRpg.Debug = 0
+SelfBotRpg.AttemptsBeforeBlacklist = 3
+SelfBotRpg.FailedNodeBlacklistSeconds = 120
+SelfBotRpg.EmptyNodeBlacklistSeconds = 120
+SelfBotRpg.StayInCurrentZone = 1
+SelfBotRpg.GatherSettleDelayMs = 1000

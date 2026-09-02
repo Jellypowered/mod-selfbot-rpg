@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: SelfBot RPG
+## Notes: Controls mod-selfbot-rpg gathering modes
+## Author: SelfBot RPG contributors
+## Version: 0.2.0
+## SavedVariables: SelfBotRPGDB
+SelfBotRPG.lua
+SelfBotRPG_Minimap.lua
