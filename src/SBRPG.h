@@ -47,6 +47,7 @@ namespace Sbrpg
         uint32 gatherSettleDelayMs = 0;
         bool stayInCurrentZone = true;
         std::vector<RoutePoint> route;
+        uint32 routeIndex = 0;
         std::unordered_map<uint32, float> pathCostCache;
         uint32 lastRoutePlanMs = 0;
     };

@@ -25,6 +25,7 @@
 #include "LootObjectStack.h"
 #include "Log.h"
 #include "Map.h"
+#include "Movement/Spline/MoveSplineInitArgs.h"
 #include "MovementActions.h"
 #include "NamedObjectContext.h"
 #include "NearestGameObjects.h"
@@ -296,10 +297,17 @@ namespace
             // Follow mmap's reachable endpoint, not the raw DB coordinate. Long
             // legs are progressed in smooth navmesh segments, allowing the bot to
             // route around buildings/cliffs instead of repeatedly cutting at them.
-            G3D::Vector3 const& end = path.GetActualEndPosition();
-            if (bot->GetExactDist(end.x, end.y, end.z) > 2.0f)
-                return MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true,
-                              MovementPriority::MOVEMENT_NORMAL, false);
+            // Use the first path point as the steer target to ensure smooth movement.
+            Movement::PointsArray const& pathPoints = path.GetPath();
+            if (!pathPoints.empty())
+            {
+                float const& x = pathPoints[0].x;
+                float const& y = pathPoints[0].y;
+                float const& z = pathPoints[0].z;
+                if (bot->GetExactDist(x, y, z) > 2.0f)
+                    return MoveTo(bot->GetMapId(), x, y, z, false, false, false, false,
+                                  MovementPriority::MOVEMENT_NORMAL, false);
+            }
             return false;
         }
 
@@ -309,62 +317,43 @@ namespace
             if (state.entries.empty())
                 return false;
 
-            // Persistent route cycle: choose the nearest unvisited eligible
-            // point, then do not consider it again until every point has had a
-            // turn. This removes the old two-node nearest-neighbour bounce.
+            // Follow the pre-sorted route sequentially, skipping visited/blacklisted
+            // points. Reset visited flags only when the full cycle completes.
             if (!state.route.empty())
             {
                 uint32 const now = getMSTime();
-                // Path lengths depend on the bot's current position. Reuse them
-                // only for a short planning window, then refresh the score map.
+                // Refresh path costs periodically for accuracy.
                 if (now - state.lastRoutePlanMs >= 30000)
                 {
                     state.pathCostCache.clear();
                     state.lastRoutePlanMs = now;
                 }
-                std::vector<std::pair<float, Sbrpg::RoutePoint*>> nearby;
-                for (Sbrpg::RoutePoint& point : state.route)
+                uint32 start = state.routeIndex;
+                uint32 attempts = 0;
+                while (attempts < state.route.size())
                 {
-                    if (point.visited || point.spawn == state.currentSpawn) continue;
-                    auto blocked = state.blacklistedUntilMs.find(point.spawn);
-                    if (blocked != state.blacklistedUntilMs.end() && now < blocked->second) continue;
-                    nearby.emplace_back(bot->GetExactDist(point.x, point.y, point.z), &point);
-                }
-                std::sort(nearby.begin(), nearby.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
-
-                // Mmap cost is the real routing score. Bound the work to the 12
-                // closest candidates so a large zone cannot stall the map thread.
-                float bestCost = std::numeric_limits<float>::max();
-                Sbrpg::RoutePoint* chosen = nullptr;
-                for (size_t i = 0; i < std::min<size_t>(12, nearby.size()); ++i)
-                {
-                    Sbrpg::RoutePoint* point = nearby[i].second;
-                    float cost = 0.0f;
-                    auto cached = state.pathCostCache.find(point->spawn);
-                    if (cached != state.pathCostCache.end())
-                        cost = cached->second;
-                    else
+                    Sbrpg::RoutePoint& point = state.route[state.routeIndex];
+                    // Skip already visited points in this cycle.
+                    if (!point.visited)
                     {
-                        PathGenerator candidatePath(bot);
-                        candidatePath.CalculatePath(point->x, point->y, point->z);
-                        if (candidatePath.GetPathType() & PATHFIND_NOPATH)
+                        auto blocked = state.blacklistedUntilMs.find(point.spawn);
+                        bool valid = (blocked == state.blacklistedUntilMs.end() || now >= blocked->second);
+                        if (valid)
                         {
-                            state.blacklistedUntilMs[point->spawn] = now + 1000 * state.failedBlacklistSeconds;
-                            continue;
+                            point.visited = true;
+                            spawn = point.spawn; x = point.x; y = point.y; z = point.z;
+                            state.routeIndex = (state.routeIndex + 1) % state.route.size();
+                            return true;
                         }
-                        cost = candidatePath.getPathLength();
-                        state.pathCostCache[point->spawn] = cost;
                     }
-                    if (cost > 0.0f && cost < bestCost) { bestCost = cost; chosen = point; }
+                    state.routeIndex = (state.routeIndex + 1) % state.route.size();
+                    if (state.routeIndex == start) break; // full cycle, all blacklisted
+                    ++attempts;
                 }
-                if (!chosen)
-                {
-                    for (Sbrpg::RoutePoint& point : state.route) point.visited = false;
-                    return false; // begin the fresh cycle on the next AI tick
-                }
-                chosen->visited = true;
-                spawn = chosen->spawn; x = chosen->x; y = chosen->y; z = chosen->z;
-                return true;
+                // Cycle complete: reset visited flags and start fresh.
+                for (Sbrpg::RoutePoint& p : state.route) p.visited = false;
+                state.routeIndex = 0;
+                return false; // pick next on the following tick
             }
 
             std::ostringstream ids;
@@ -540,15 +529,15 @@ namespace
         void OnPlayerBeforeSendChatMessage(Player* player, uint32& /*type*/, uint32& lang, std::string& msg) override
         {
             if (!player || lang != LANG_ADDON || msg.rfind("SBRPG\\t1\\tCMD\\t", 0) != 0) return;
-            std::string payload = msg.substr(12); std::istringstream in(payload); std::string command, a, b;
-            std::getline(in, command, '\t'); std::getline(in, a, '\t'); std::getline(in, b, '\t');
-            if (command == "START")
+            std::string payload = msg.substr(12); std::istringstream in(payload); std::string directive, a, b;
+            std::getline(in, directive, '\t'); std::getline(in, a, '\t'); std::getline(in, b, '\t');
+            if (a == "START")
             {
                 std::string error;
                 if (!ConfigureFarm(player, a, b, &error)) SendAddon(player, "SBRPG\\t1\\tERROR\\t" + error);
             }
-            else if (command == "STOP") Sbrpg::Stop(player);
-            else if (command == "SET")
+            else if (a == "STOP") Sbrpg::Stop(player);
+            else if (a == "SET")
             {
                 uint32 value = static_cast<uint32>(std::strtoul(b.c_str(), nullptr, 10)); std::string error;
                 if (!Sbrpg::SetOption(player, a, value, &error)) SendAddon(player, "SBRPG\\t1\\tERROR\\t" + error);
@@ -635,6 +624,11 @@ namespace Sbrpg
             } while (routeRows->NextRow());
         }
         Debug(player, Acore::StringFormat("loaded {} route nodes on map {} in zone {}", state.route.size(), player->GetMapId(), state.zoneId));
+        // Sort route by distance from starting position for a smooth cycle.
+        state.routeIndex = 0;
+        std::sort(state.route.begin(), state.route.end(),
+            [player](Sbrpg::RoutePoint const& a, Sbrpg::RoutePoint const& b)
+            { return player->GetExactDistSq(a.x, a.y, a.z) < player->GetExactDistSq(b.x, b.y, b.z); });
         PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
         state.addedLootStrategy = !ai->HasStrategy("loot", BOT_STATE_NON_COMBAT);
         if (state.addedLootStrategy)

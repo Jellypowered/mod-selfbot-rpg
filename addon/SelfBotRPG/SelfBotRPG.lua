@@ -10,13 +10,16 @@ local resources={both={"Zone"},mining={"Copper","Tin","Silver","Iron","Gold","Mi
 local profession,resource="mining","Copper"
 local function Command(text)
   -- text is the legacy .sbrpg command shape; translate it to protocol v1.
+  -- Always whisper to self so only the server processes the message.
   local command, rest = string.match(text, "%.sbrpg%s+(%S+)%s*(.*)")
   if not command then return end
-  local payload = "1\tCMD\t" .. string.upper(command)
+  local opcode = string.upper(command)
+  -- Map legacy commands to protocol opcodes
+  if opcode == "FARM" then opcode = "START" end
+  local payload = "1\t" .. opcode
   for word in string.gmatch(rest, "%S+") do payload = payload .. "\t" .. word end
-  local channel, target = "WHISPER", UnitName("player")
-  if GetNumRaidMembers() > 0 then channel, target = "RAID", nil elseif GetNumPartyMembers() > 0 then channel, target = "PARTY", nil end
-  SendAddonMessage("SBRPG", payload, channel, target)
+  SendAddonMessage("SBRPG", payload, "WHISPER", UnitName("player"))
+end
 end
 local pd=CreateFrame("Frame","SelfBotRPGProfession",addon,"UIDropDownMenuTemplate"); pd:SetPoint("TOPLEFT",18,-57)
 local rd=CreateFrame("Frame","SelfBotRPGResource",addon,"UIDropDownMenuTemplate"); rd:SetPoint("TOPRIGHT",-34,-57)

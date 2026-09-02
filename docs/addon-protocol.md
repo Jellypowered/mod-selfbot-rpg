@@ -1,7 +1,8 @@
 # SBRPG addon protocol v1
 
-Transport: WoW `LANG_ADDON` messages with prefix `SBRPG`, sent through PARTY,
-RAID, or a self-whisper when solo. Fields use tab delimiters.
+Transport: WoW `LANG_ADDON` messages with prefix `SBRPG`, sent via WHISPER
+channel directed at the player themselves. Never broadcast to PARTY/RAID.
+Fields use tab delimiters.
 
 ## Client → server
 
