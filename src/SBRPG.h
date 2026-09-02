@@ -37,10 +37,14 @@ namespace Sbrpg
         ObjectGuid lastGatheredNode;
         bool addedLootStrategy = false;
         uint32 zoneId = 0;
+        uint32 mapId = 0;
+        bool startedInside = false;
         ObjectGuid pendingGatherNode;
         ObjectGuid activeGatherNode;
         uint32 gatherReadyMs = 0;
+        uint32 gatherAttemptedMs = 0;
         uint32 gatheredItems = 0;
+        std::string activity = "starting";
         uint32 attemptsBeforeBlacklist = 0;
         uint32 failedBlacklistSeconds = 0;
         uint32 emptyBlacklistSeconds = 0;

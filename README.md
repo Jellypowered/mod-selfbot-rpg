@@ -35,6 +35,8 @@ where farming started.
 - `PATHFIND_NOPATH`, empty nodes, and repeated no-progress nodes are temporarily blacklisted.
 - Movement follows the reachable mmap endpoint, using normal self-bot pacing.
 - The bot stops at the node and waits the configured settle delay before gathering.
+- Cave and tunnel nodes remain eligible on the same map; mmap/playerbots pathing decides whether the entrance and interior are connected.
+- Zone/area changes on the same map are tolerated; true map changes stop the run safely because route coordinates are map-local.
 - Normal playerbots `+loot` is enabled during a farm run when this module added it.
 
 ## Configuration

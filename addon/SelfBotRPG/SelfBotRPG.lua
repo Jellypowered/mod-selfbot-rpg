@@ -9,18 +9,11 @@ local help=addon:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); help:
 local resources={both={"Zone"},mining={"Copper","Tin","Silver","Iron","Gold","Mithril","Truesilver","Thorium","Fel Iron","Adamantite","Khorium","Cobalt","Saronite","Titanium"},herbalism={"Peacebloom","Silverleaf","Earthroot","Mageroyal","Briarthorn","Bruiseweed","Wild Steelbloom","Kingsblood","Liferoot","Fadeleaf","Goldthorn","Felweed","Goldclover","Lichbloom","Icethorn","Frost Lotus"}}
 local profession,resource="mining","Copper"
 local settings={}
-if RegisterAddonMessagePrefix then RegisterAddonMessagePrefix("SBRPG") end
+if RegisterAddonMessagePrefix then RegisterAddonMessagePrefix("JLYRPG") end
 local function Command(text)
-  -- text is the legacy .sbrpg command shape; translate it to protocol v1.
-  -- Always whisper to self so only the server processes the message.
-  local command, rest = string.match(text, "%.sbrpg%s+(%S+)%s*(.*)")
-  if not command then return end
-  local opcode = string.upper(command)
-  -- Map legacy commands to protocol opcodes
-  if opcode == "FARM" then opcode = "START" end
-  local payload = "1\t" .. opcode
-  for word in string.gmatch(rest, "%S+") do payload = payload .. "\t" .. word end
-  SendAddonMessage("SBRPG", payload, "WHISPER", UnitName("player"))
+  -- Safe fallback: the server chat command path is authoritative while the
+  -- addon transport is isolated from legacy playerbot chat handlers.
+  SendChatMessage(text, "SAY")
 end
 local pd=CreateFrame("Frame","SelfBotRPGProfession",addon,"UIDropDownMenuTemplate"); pd:SetPoint("TOPLEFT",18,-57)
 local rd=CreateFrame("Frame","SelfBotRPGResource",addon,"UIDropDownMenuTemplate"); rd:SetPoint("TOPRIGHT",-34,-57)
@@ -28,7 +21,7 @@ local function SetResource(v) resource=v; UIDropDownMenu_SetText(rd,v) end
 UIDropDownMenu_Initialize(rd,function() local i=UIDropDownMenu_CreateInfo(); for _,n in ipairs(resources[profession]) do i.text=n;i.checked=n==resource;i.func=function()SetResource(n)end;UIDropDownMenu_AddButton(i) end
  if profession~="both" then i.text="Zone";i.checked=resource=="Zone";i.func=function()SetResource("Zone")end;UIDropDownMenu_AddButton(i) end end); UIDropDownMenu_SetWidth(rd,180);UIDropDownMenu_SetText(rd,resource)
 UIDropDownMenu_Initialize(pd,function() local i=UIDropDownMenu_CreateInfo();for _,n in ipairs({"Mining","Herbalism","Both"}) do local v=string.lower(n);i.text=n;i.checked=v==profession;i.func=function()profession=v;SetResource(resources[v][1]);UIDropDownMenu_SetText(pd,n)end;UIDropDownMenu_AddButton(i)end end);UIDropDownMenu_SetWidth(pd,110);UIDropDownMenu_SetText(pd,"Mining")
-local status=addon:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall");status:SetPoint("TOP",0,-120);status:SetWidth(420);status:SetText("SelfBot RPG: waiting for status")
+local status=addon:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall");status:SetPoint("TOP",0,-120);status:SetWidth(420);status:SetHeight(42);status:SetWordWrap(true);status:SetJustifyH("CENTER");status:SetJustifyV("TOP");status:SetText("SelfBot RPG: waiting for status")
 local lastStatusRequest=0
 local function RequestStatus()
   local now=GetTime()
@@ -36,8 +29,12 @@ local function RequestStatus()
   lastStatusRequest=now
   Command(".sbrpg status")
 end
-addon:RegisterEvent("CHAT_MSG_ADDON");addon:SetScript("OnEvent",function(_,_,prefix,message)
- if prefix~="SBRPG" then return end
+addon:RegisterEvent("CHAT_MSG_ADDON");addon:RegisterEvent("CHAT_MSG_SYSTEM");addon:SetScript("OnEvent",function(_,event,prefix,message)
+ if event=="CHAT_MSG_SYSTEM" then
+   if prefix and string.find(prefix,"SelfBot RPG",1,true) then status:SetText(prefix) end
+   return
+ end
+ if prefix~="JLYRPG" then return end
  local parts={} for field in string.gmatch(message,"[^\t]+") do table.insert(parts,field) end
  if parts[1]~="1" then return end
  if parts[2]=="STATUS" then
@@ -53,12 +50,8 @@ addon:RegisterEvent("CHAT_MSG_ADDON");addon:SetScript("OnEvent",function(_,_,pre
  elseif parts[2]=="DEBUG" then status:SetText(parts[3] or "") end
 end)
 addon:SetScript("OnShow", RequestStatus)
-addon:SetScript("OnUpdate", function(_, elapsed)
-  if addon:IsShown() then
-    addon.statusTimer=(addon.statusTimer or 0)+elapsed
-    if addon.statusTimer>=2 then addon.statusTimer=0;RequestStatus() end
-  end
-end)
+-- Chat fallback is deliberately requested only when a panel opens; periodic
+-- requests would create visible chat traffic.
 SelfBotRPGSettingsFrame=CreateFrame("Frame","SelfBotRPGSettingsFrame",UIParent)
 local settingsPanel=SelfBotRPGSettingsFrame;settingsPanel:SetSize(330,230);settingsPanel:SetPoint("CENTER",addon,"CENTER",0,0);settingsPanel:SetMovable(true);settingsPanel:EnableMouse(true);settingsPanel:SetScript("OnShow", RequestStatus);settingsPanel:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",edgeFile="Interface/Tooltips/UI-Tooltip-Border",edgeSize=12,insets={left=3,right=3,top=3,bottom=3}});settingsPanel:SetBackdropColor(0,0,0,.92);settingsPanel:Hide()
 local st=settingsPanel:CreateFontString(nil,"OVERLAY","GameFontNormalLarge");st:SetPoint("TOP",0,-12);st:SetText("SelfBot RPG Settings")

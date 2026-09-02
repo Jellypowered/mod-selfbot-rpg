@@ -29,7 +29,6 @@
 #include "MovementActions.h"
 #include "NamedObjectContext.h"
 #include "NearestGameObjects.h"
-#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -177,15 +176,32 @@ namespace
         bool Execute(Event /*event*/) override
         {
             Sbrpg::FarmState const* state = Sbrpg::Get(bot);
-            if (!state || !state->active || bot->IsInCombat() || bot->isDead())
+            if (!state || !state->active)
                 return false;
+            Sbrpg::FarmState& mutableState = states[bot->GetGUID()];
+            if (bot->IsInCombat())
+            {
+                mutableState.activity = "combat paused";
+                return false;
+            }
+            if (bot->isDead())
+            {
+                mutableState.activity = "dead; waiting";
+                return false;
+            }
+            if (state->mapId != bot->GetMapId())
+            {
+                Debug(bot, "farm stopped after map change; route coordinates are map-local");
+                Sbrpg::Stop(bot);
+                return false;
+            }
 
             // A loaded selected node always wins over the recorded route point.
             // The stock open-loot action performs the profession/lock check and
             // casts the appropriate gathering spell, so combat/loot mechanics
             // remain wholly owned by mod-playerbots.
-            Sbrpg::FarmState& mutableState = states[bot->GetGUID()];
             uint32 const now = getMSTime();
+            mutableState.activity = "scanning nearby nodes";
             // Refresh the live-node cache at most twice per second. GUIDs are
             // retained, not raw pointers, so unloaded/despawned objects are safe.
             float const liveScanRadius = std::max(30.0f, sPlayerbotAIConfig.sightDistance);
@@ -201,6 +217,21 @@ namespace
                         mutableState.liveNodes.push_back(go->GetGUID());
                 mutableState.lastLiveScanMs = now;
             }
+            if (!mutableState.activeGatherNode.IsEmpty())
+            {
+                if (now - mutableState.gatherAttemptedMs < 8000)
+                {
+                    mutableState.activity = "waiting for gather result";
+                    return true;
+                }
+                mutableState.blacklistedUntilMs[mutableState.activeGatherNode.GetCounter()] =
+                    now + 1000 * mutableState.emptyBlacklistSeconds;
+                mutableState.activeGatherNode = ObjectGuid::Empty;
+                mutableState.pendingGatherNode = ObjectGuid::Empty;
+                mutableState.currentSpawn = 0;
+                mutableState.activity = "gather timed out; replanning";
+                return true;
+            }
             for (ObjectGuid const& guid : mutableState.liveNodes)
             {
                 GameObject* go = botAI->GetGameObject(guid);
@@ -213,19 +244,27 @@ namespace
                 // Finish with playerbots' collision-aware approach before
                 // issuing the profession cast; this avoids casting from 12yd.
                 if (bot->GetDistance(go) > 5.0f)
+                {
+                    mutableState.activity = "approaching live node";
                     return MoveNear(go, 3.0f, MovementPriority::MOVEMENT_NORMAL);
+                }
                 if (mutableState.pendingGatherNode != go->GetGUID())
                 {
                     mutableState.pendingGatherNode = go->GetGUID();
+                    mutableState.activity = "settling at node";
                     mutableState.gatherReadyMs = now + mutableState.gatherSettleDelayMs;
                     bot->StopMoving();
                     return true;
                 }
                 if (now < mutableState.gatherReadyMs)
                     return true;
+                mutableState.activity = "gathering";
                 context->GetValue<LootObject>("loot target")->Set(loot);
                 mutableState.activeGatherNode = go->GetGUID();
+                mutableState.gatherAttemptedMs = now;
                 bool const opened = botAI->DoSpecificAction("open loot", Event("sbrpg", "", bot), true);
+                if (opened)
+                    mutableState.currentSpawn = 0;
                 if (opened && mutableState.lastGatheredNode != go->GetGUID())
                 {
                     ++mutableState.harvested;
@@ -246,7 +285,11 @@ namespace
                     x = current->x, y = current->y, z = current->z;
             }
             if (spawn == 0 && !NextRoutePoint(mutableState, spawn, x, y, z))
-                return false;
+            {
+                mutableState.activity = "waiting for eligible route node";
+                return true;
+            }
+            mutableState.activity = "travelling to route node";
 
             // Reaching a despawned node advances the circular route rather than
             // waiting at a single spawn forever. A later pass sees its respawn.
@@ -262,6 +305,7 @@ namespace
                 mutableState.currentSpawn = 0;
                 mutableState.targetSinceMs = 0;
                 mutableState.stuckChecks = 0;
+                mutableState.activity = "route node empty; replanning";
                 Debug(bot, Acore::StringFormat("spawn {} is empty; skipping it for {} seconds", spawn, blacklistSeconds));
                 return true;
             }
@@ -301,37 +345,27 @@ namespace
             // immediately rather than burning all three progress windows.
             PathGenerator path(bot);
             path.CalculatePath(x, y, z);
-            if (path.GetPathType() & PATHFIND_NOPATH)
+            PathType const pathType = path.GetPathType();
+            if (pathType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH | PATHFIND_SHORTCUT | PATHFIND_FARFROMPOLY))
             {
                 mutableState.blacklistedUntilMs[spawn] = now + 1000 * mutableState.failedBlacklistSeconds;
                 mutableState.currentSpawn = 0;
+                mutableState.activity = "route blocked; replanning";
                 Debug(bot, Acore::StringFormat("spawn {} has no navmesh path; blacklisted", spawn));
                 return true;
             }
-            if (bot->GetLevel() >= 20 && !bot->IsMounted() && distance > 40.0f)
-                botAI->DoSpecificAction("mount", Event("sbrpg", "", bot), true);
+            // Use playerbots' normal terrain-aware movement implementation for
+            // the complete destination. It performs ground-height correction,
+            // nearby-Z recovery, duplicate suppression, movement pacing, and
+            // spline generation without repeatedly resetting a short steering
+            // waypoint every AI tick.
+            if (bot->GetExactDist(x, y, z) > 2.0f)
+                return MoveTo(bot->GetMapId(), x, y, z, false, false, false, false,
+                              MovementPriority::MOVEMENT_NORMAL, false);
 
-            // Steer toward a bounded look-ahead point. Path point zero is
-            // normally the bot's current position, while the final point can be
-            // hundreds of yards away. A 24-yard look-ahead keeps movement smooth
-            // without bypassing bends in the navmesh corridor.
-            Movement::PointsArray const& pathPoints = path.GetPath();
-            if (pathPoints.size() > 1)
-            {
-                G3D::Vector3 steer = pathPoints.back();
-                for (size_t i = 1; i < pathPoints.size(); ++i)
-                {
-                    if (bot->GetExactDist(pathPoints[i].x, pathPoints[i].y, pathPoints[i].z) >= 24.0f)
-                    {
-                        steer = pathPoints[i];
-                        break;
-                    }
-                }
-                if (bot->GetExactDist(steer.x, steer.y, steer.z) > 2.0f)
-                    return MoveTo(bot->GetMapId(), steer.x, steer.y, steer.z, false, false, false, false,
-                                  MovementPriority::MOVEMENT_NORMAL, false);
-            }
-            return false;
+            // Keep the strategy alive while a valid destination is waiting for
+            // the next movement attempt.
+            return true;
         }
 
     private:
@@ -455,6 +489,27 @@ namespace
         Ctx::sharedStrategyContexts.Add(new SelfbotRpgStrategyContext());
     }
 
+    class SelfbotRpgActivityScript final : public PlayerScript
+    {
+    public:
+        SelfbotRpgActivityScript() : PlayerScript("SelfbotRpgActivityScript", { PLAYERHOOK_ON_UPDATE }) { }
+
+        void OnPlayerUpdate(Player* player, uint32 /*diff*/) override
+        {
+            auto it = player ? states.find(player->GetGUID()) : states.end();
+            if (it == states.end() || !it->second.active)
+                return;
+
+            // Do not call ToggleAFK(): playerbots may set AFK again during its
+            // passive pass, producing an on/off chat loop. Directly clear the
+            // flag and keep the farmer standing while this run owns activity.
+            if (player->isAFK())
+                player->RemovePlayerFlag(PLAYER_FLAGS_AFK);
+            if (player->IsSitState())
+                player->SetStandState(UNIT_STAND_STATE_STAND);
+        }
+    };
+
     class SelfbotRpgLootScript : public PlayerScript
     {
     public:
@@ -478,18 +533,6 @@ namespace
         SelfbotRpgRegistrar() : WorldScript("SelfbotRpgRegistrar") { }
         void OnUpdate(uint32 /*diff*/) override
         {
-            // SBRPG owns a narrow activity lease: an active farm is intentional
-            // player activity, so do not leave this character AFK while it runs.
-            // No synthetic chat, movement, loot, or inventory packets are sent.
-            for (auto const& [guid, state] : states)
-            {
-                if (!state.active)
-                    continue;
-                if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))
-                    if (player->isAFK())
-                        player->ToggleAFK();
-            }
-
             if (_done) return;
             _done = true;
             RegisterContexts<WarriorAiObjectContext>(); RegisterContexts<PaladinAiObjectContext>();
@@ -549,12 +592,25 @@ namespace
             perMinute, perMinute / 60.0, state->currentSpawn);
     }
 
-    void SendAddon(Player* player, std::string const& payload)
+    ChatMsg ReplyChatType(uint32 type)
+    {
+        switch (type)
+        {
+            case CHAT_MSG_PARTY:
+            case CHAT_MSG_RAID:
+            case CHAT_MSG_WHISPER:
+                return static_cast<ChatMsg>(type);
+            default:
+                return CHAT_MSG_WHISPER;
+        }
+    }
+
+    void SendAddon(Player* player, ChatMsg chatType, std::string const& payload)
     {
         if (!player || !player->GetSession()) return;
-        std::string const wire = "SBRPG\t" + payload;
+        std::string const wire = "JLYRPG\t" + payload;
         WorldPacket data;
-        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, nullptr, wire.c_str());
+        ChatHandler::BuildChatPacket(data, chatType, LANG_ADDON, player, nullptr, wire.c_str());
         player->SendDirectMessage(&data);
     }
 
@@ -563,9 +619,9 @@ namespace
     public:
         SelfbotRpgAddonHook() : PlayerScript("SelfbotRpgAddonHook") { }
 
-        bool TryHandle(Player* player, uint32 lang, std::string& msg)
+        bool TryHandle(Player* player, uint32 type, uint32 lang, std::string& msg)
         {
-            if (!player || lang != LANG_ADDON || msg.rfind("SBRPG\t", 0) != 0)
+            if (!player || lang != LANG_ADDON || msg.rfind("JLYRPG\t", 0) != 0)
                 return false;
 
             std::vector<std::string> fields;
@@ -580,7 +636,7 @@ namespace
             {
                 std::string error;
                 if (!ConfigureFarm(player, fields[2], fields[3], &error))
-                    SendAddon(player, "1\tERROR\t" + error);
+                    SendAddon(player, ReplyChatType(type), "1\tERROR\t" + error);
             }
             else if (opcode == "STOP")
                 Sbrpg::Stop(player);
@@ -589,25 +645,25 @@ namespace
                 uint32 value = static_cast<uint32>(std::strtoul(fields[3].c_str(), nullptr, 10));
                 std::string error;
                 if (!Sbrpg::SetOption(player, fields[2], value, &error))
-                    SendAddon(player, "1\tERROR\t" + error);
+                    SendAddon(player, ReplyChatType(type), "1\tERROR\t" + error);
                 else
-                    SendAddon(player, "1\tSETTING\t" + fields[2] + "\t" + fields[3]);
+                    SendAddon(player, ReplyChatType(type), "1\tSETTING\t" + fields[2] + "\t" + fields[3]);
             }
             else if (opcode != "STATUS")
-                SendAddon(player, "1\tERROR\tUNKNOWN_OPCODE");
+                SendAddon(player, ReplyChatType(type), "1\tERROR\tUNKNOWN_OPCODE");
 
-            SendAddon(player, AddonStatus(player));
+            SendAddon(player, ReplyChatType(type), AddonStatus(player));
             return true;
         }
 
-        bool OnPlayerCanUseChat(Player* player, uint32 /*type*/, uint32 lang, std::string& msg, Player* /*receiver*/) override
+        bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 lang, std::string& msg, Player* /*receiver*/) override
         {
-            return !TryHandle(player, lang, msg);
+            return !TryHandle(player, type, lang, msg);
         }
 
-        bool OnPlayerCanUseChat(Player* player, uint32 /*type*/, uint32 lang, std::string& msg, Group* /*group*/) override
+        bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 lang, std::string& msg, Group* /*group*/) override
         {
-            return !TryHandle(player, lang, msg);
+            return !TryHandle(player, type, lang, msg);
         }
     };
 
@@ -637,7 +693,15 @@ namespace
                 handler->PSendSysMessage("SelfBot RPG farm start failed: {}", error);
                 handler->SendSysMessage("Usage: .sbrpg farm <mining|herbalism> <resource>; `.sbrpg farm zone mining`; or `.sbrpg farm both zone`.");
             }
-            else handler->SendSysMessage(Sbrpg::Status(player));
+            else
+            {
+                handler->SendSysMessage(Sbrpg::Status(player));
+                if (Sbrpg::FarmState const* state = Sbrpg::Get(player))
+                    handler->PSendSysMessage("SBRPG settings: attempts {}, failed {}s, empty {}s, zone {}, settle {}ms.",
+                        state->attemptsBeforeBlacklist, state->failedBlacklistSeconds,
+                        state->emptyBlacklistSeconds, state->stayInCurrentZone ? 1 : 0,
+                        state->gatherSettleDelayMs);
+            }
             return true;
         }
         static bool HandleStop(ChatHandler* handler)
@@ -664,8 +728,10 @@ namespace Sbrpg
         if (entries.empty()) { if (error) *error = "Select at least one node type."; return false; }
         FarmState& state = states[player->GetGUID()]; state.active = true; state.profession = profession;
         state.entries = std::move(entries); state.currentSpawn = 0; state.harvested = 0;
-        state.startedMs = getMSTime(); state.lastGatheredNode = ObjectGuid::Empty; state.activeGatherNode = ObjectGuid::Empty; state.gatheredItems = 0;
-        state.zoneId = player->GetZoneId(); state.pendingGatherNode = ObjectGuid::Empty;
+        state.startedMs = getMSTime(); state.activity = "planning route"; state.lastGatheredNode = ObjectGuid::Empty; state.activeGatherNode = ObjectGuid::Empty; state.gatheredItems = 0;
+        state.zoneId = player->GetZoneId(); state.mapId = player->GetMapId();
+        state.startedInside = !player->IsOutdoors();
+        state.pendingGatherNode = ObjectGuid::Empty;
         state.attemptsBeforeBlacklist = sConfigMgr->GetOption<uint32>("SelfBotRpg.AttemptsBeforeBlacklist", 3);
         state.failedBlacklistSeconds = sConfigMgr->GetOption<uint32>("SelfBotRpg.FailedNodeBlacklistSeconds", 120);
         state.emptyBlacklistSeconds = sConfigMgr->GetOption<uint32>("SelfBotRpg.EmptyNodeBlacklistSeconds", 120);
@@ -680,9 +746,9 @@ namespace Sbrpg
             {
                 Field* f = routeRows->Fetch();
                 float x = f[2].Get<float>(), y = f[3].Get<float>(), z = f[4].Get<float>();
-                if (!state.stayInCurrentZone || player->GetMap()->GetZoneId(player->GetPhaseMask(), x, y, z) == state.zoneId)
-                    if (IsGatheringEntry(profession, f[1].Get<uint32>()))
-                        state.route.push_back({f[0].Get<uint32>(), f[1].Get<uint32>(), x, y, z, false});
+                if ((!state.stayInCurrentZone || player->GetMap()->GetZoneId(player->GetPhaseMask(), x, y, z) == state.zoneId) &&
+                    IsGatheringEntry(profession, f[1].Get<uint32>()))
+                    state.route.push_back({f[0].Get<uint32>(), f[1].Get<uint32>(), x, y, z, false});
             } while (routeRows->NextRow());
         }
         Debug(player, Acore::StringFormat("loaded {} route nodes on map {} in zone {}", state.route.size(), player->GetMapId(), state.zoneId));
@@ -786,20 +852,17 @@ namespace Sbrpg
         if (!state || !state->active) return "SelfBot RPG: idle.";
         uint32 const elapsedMs = std::max(1u, getMSTime() - state->startedMs);
         double const perMinute = state->harvested * 60000.0 / elapsedMs;
-        return "SelfBot RPG: farming " + std::string(ProfessionName(state->profession)) + " (" +
+        return "SelfBot RPG: " + state->activity + " | farming " + std::string(ProfessionName(state->profession)) + " (" +
                std::to_string(state->route.size()) + " eligible route nodes, " +
                std::to_string(state->harvested) + " gathers / " + std::to_string(state->gatheredItems) + " items, " +
-               Acore::StringFormat("{:.2f}/min {:.3f}/sec", perMinute, perMinute / 60.0) +
-               Acore::StringFormat("; attempts {}, failed {}s, empty {}s, zone {}, settle {}ms).",
-                                   state->attemptsBeforeBlacklist, state->failedBlacklistSeconds,
-                                   state->emptyBlacklistSeconds, state->stayInCurrentZone ? 1 : 0,
-                                   state->gatherSettleDelayMs);
+               Acore::StringFormat("{:.2f}/min {:.3f}/sec).", perMinute, perMinute / 60.0);
     }
 }
 
 void AddSelfbotRpgScripts()
 {
     new SelfbotRpgRegistrar();
+    new SelfbotRpgActivityScript();
     new SelfbotRpgLootScript();
     new SelfbotRpgAddonHook();
     new SelfbotRpgCommand();
