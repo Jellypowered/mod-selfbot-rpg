@@ -7,11 +7,10 @@ Fields use tab delimiters.
 ## Client → server
 
 ```
-SBRPG	1	CMD	START	<mining|herbalism|both|zone>	<resource>
-SBRPG	1	CMD	STOP
-SBRPG	1	CMD	STATUS
-SBRPG	1	CMD	SET	<key>	<value>
-SBRPG	1	CMD	SETTINGS
+SBRPG	1	START	<mining|herbalism|both|zone>	<resource>
+SBRPG	1	STOP
+SBRPG	1	STATUS
+SBRPG	1	SET	<key>	<value>
 ```
 
 For Zone mining/herbalism, `START` sends `zone` as mode and the profession as
@@ -20,11 +19,13 @@ resource. For Both Zone, it sends `both`, `zone`.
 ## Server → client
 
 ```
-SBRPG	1	STATUS	<active>	<mode>	<routeNodes>	<gathers>	<items>	<itemsPerMin>	<targetSpawn>
+SBRPG	1	STATUS	<active>	<mode>	<routeNodes>	<gathers>	<items>	<itemsPerMin>	<itemsPerSec>	<targetSpawn>
 SBRPG	1	SETTING	<key>	<value>
 SBRPG	1	DEBUG	<text>
 SBRPG	1	ERROR	<text>
 ```
 
 The server is authoritative. The addon renders these frames and does not infer
-run state from system chat. Malformed/unknown frames are ignored.
+run state from system chat. The panel requests `STATUS` on open and no more
+than once every two seconds while visible. Messages are self-whispered only;
+never send SBRPG frames to PARTY or RAID. Malformed/unknown frames are ignored.

@@ -29,6 +29,7 @@
 #include "MovementActions.h"
 #include "NamedObjectContext.h"
 #include "NearestGameObjects.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -42,6 +43,7 @@
 #include "Timer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <limits>
 #include <sstream>
@@ -182,17 +184,27 @@ namespace
             // The stock open-loot action performs the profession/lock check and
             // casts the appropriate gathering spell, so combat/loot mechanics
             // remain wholly owned by mod-playerbots.
-            std::list<GameObject*> nearby;
-            // Prefer currently loaded, spawned selected nodes before database route
-            // points. SightDistance spans active nearby grids without assuming
-            // anything about respawn state in unloaded grids.
+            Sbrpg::FarmState& mutableState = states[bot->GetGUID()];
+            uint32 const now = getMSTime();
+            // Refresh the live-node cache at most twice per second. GUIDs are
+            // retained, not raw pointers, so unloaded/despawned objects are safe.
             float const liveScanRadius = std::max(30.0f, sPlayerbotAIConfig.sightDistance);
-            AnyGameObjectInObjectRangeCheck check(bot, liveScanRadius);
-            Acore::GameObjectListSearcher<AnyGameObjectInObjectRangeCheck> searcher(bot, nearby, check);
-            Cell::VisitObjects(bot, searcher, liveScanRadius);
-            for (GameObject* go : nearby)
+            if (now - mutableState.lastLiveScanMs >= 1500)
             {
-                if (!go || !go->isSpawned() || !HasEntry(*state, go->GetEntry()))
+                mutableState.liveNodes.clear();
+                std::list<GameObject*> scanned;
+                AnyGameObjectInObjectRangeCheck check(bot, liveScanRadius);
+                Acore::GameObjectListSearcher<AnyGameObjectInObjectRangeCheck> searcher(bot, scanned, check);
+                Cell::VisitObjects(bot, searcher, liveScanRadius);
+                for (GameObject* go : scanned)
+                    if (go && go->isSpawned() && HasEntry(*state, go->GetEntry()))
+                        mutableState.liveNodes.push_back(go->GetGUID());
+                mutableState.lastLiveScanMs = now;
+            }
+            for (ObjectGuid const& guid : mutableState.liveNodes)
+            {
+                GameObject* go = botAI->GetGameObject(guid);
+                if (!go || !go->IsInWorld() || !go->isSpawned() || !HasEntry(*state, go->GetEntry()))
                     continue;
                 LootObject loot(bot, go->GetGUID());
                 if (!MatchesProfession(*state, loot) || !loot.IsLootPossible(bot))
@@ -202,8 +214,6 @@ namespace
                 // issuing the profession cast; this avoids casting from 12yd.
                 if (bot->GetDistance(go) > 5.0f)
                     return MoveNear(go, 3.0f, MovementPriority::MOVEMENT_NORMAL);
-                Sbrpg::FarmState& mutableState = states[bot->GetGUID()];
-                uint32 const now = getMSTime();
                 if (mutableState.pendingGatherNode != go->GetGUID())
                 {
                     mutableState.pendingGatherNode = go->GetGUID();
@@ -224,15 +234,22 @@ namespace
                 return opened;
             }
 
-            uint32 spawn = 0;
+            uint32 spawn = mutableState.currentSpawn;
             float x = 0.0f, y = 0.0f, z = 0.0f;
-            if (!NextRoutePoint(states[bot->GetGUID()], spawn, x, y, z))
+            if (spawn != 0)
+            {
+                auto current = std::find_if(mutableState.route.begin(), mutableState.route.end(),
+                    [spawn](Sbrpg::RoutePoint const& point) { return point.spawn == spawn; });
+                if (current == mutableState.route.end())
+                    mutableState.currentSpawn = spawn = 0;
+                else
+                    x = current->x, y = current->y, z = current->z;
+            }
+            if (spawn == 0 && !NextRoutePoint(mutableState, spawn, x, y, z))
                 return false;
 
             // Reaching a despawned node advances the circular route rather than
             // waiting at a single spawn forever. A later pass sees its respawn.
-            Sbrpg::FarmState& mutableState = states[bot->GetGUID()];
-            uint32 const now = getMSTime();
             float const distance = bot->GetDistance(x, y, z);
             if (distance < 5.0f)
             {
@@ -294,18 +311,24 @@ namespace
             if (bot->GetLevel() >= 20 && !bot->IsMounted() && distance > 40.0f)
                 botAI->DoSpecificAction("mount", Event("sbrpg", "", bot), true);
 
-            // Follow mmap's reachable endpoint, not the raw DB coordinate. Long
-            // legs are progressed in smooth navmesh segments, allowing the bot to
-            // route around buildings/cliffs instead of repeatedly cutting at them.
-            // Use the first path point as the steer target to ensure smooth movement.
+            // Steer toward a bounded look-ahead point. Path point zero is
+            // normally the bot's current position, while the final point can be
+            // hundreds of yards away. A 24-yard look-ahead keeps movement smooth
+            // without bypassing bends in the navmesh corridor.
             Movement::PointsArray const& pathPoints = path.GetPath();
-            if (!pathPoints.empty())
+            if (pathPoints.size() > 1)
             {
-                float const& x = pathPoints[0].x;
-                float const& y = pathPoints[0].y;
-                float const& z = pathPoints[0].z;
-                if (bot->GetExactDist(x, y, z) > 2.0f)
-                    return MoveTo(bot->GetMapId(), x, y, z, false, false, false, false,
+                G3D::Vector3 steer = pathPoints.back();
+                for (size_t i = 1; i < pathPoints.size(); ++i)
+                {
+                    if (bot->GetExactDist(pathPoints[i].x, pathPoints[i].y, pathPoints[i].z) >= 24.0f)
+                    {
+                        steer = pathPoints[i];
+                        break;
+                    }
+                }
+                if (bot->GetExactDist(steer.x, steer.y, steer.z) > 2.0f)
+                    return MoveTo(bot->GetMapId(), steer.x, steer.y, steer.z, false, false, false, false,
                                   MovementPriority::MOVEMENT_NORMAL, false);
             }
             return false;
@@ -440,7 +463,12 @@ namespace
         {
             auto it = player ? states.find(player->GetGUID()) : states.end();
             if (it != states.end() && it->second.active && it->second.activeGatherNode == lootGuid)
+            {
                 it->second.gatheredItems += count;
+                it->second.currentSpawn = 0;
+                it->second.pendingGatherNode = ObjectGuid::Empty;
+                it->second.activeGatherNode = ObjectGuid::Empty;
+            }
         }
     };
 
@@ -450,6 +478,18 @@ namespace
         SelfbotRpgRegistrar() : WorldScript("SelfbotRpgRegistrar") { }
         void OnUpdate(uint32 /*diff*/) override
         {
+            // SBRPG owns a narrow activity lease: an active farm is intentional
+            // player activity, so do not leave this character AFK while it runs.
+            // No synthetic chat, movement, loot, or inventory packets are sent.
+            for (auto const& [guid, state] : states)
+            {
+                if (!state.active)
+                    continue;
+                if (Player* player = ObjectAccessor::FindConnectedPlayer(guid))
+                    if (player->isAFK())
+                        player->ToggleAFK();
+            }
+
             if (_done) return;
             _done = true;
             RegisterContexts<WarriorAiObjectContext>(); RegisterContexts<PaladinAiObjectContext>();
@@ -501,51 +541,73 @@ namespace
     std::string AddonStatus(Player* player)
     {
         Sbrpg::FarmState const* state = Sbrpg::Get(player);
-        if (!state || !state->active) return "SBRPG\\t1\\tSTATUS\\t0\\tidle\\t0\\t0\\t0\\t0\\t0\\t0";
+        if (!state || !state->active) return "1\tSTATUS\t0\tidle\t0\t0\t0\t0\t0\t0";
         uint32 elapsed = std::max(1u, getMSTime() - state->startedMs);
         double perMinute = state->gatheredItems * 60000.0 / elapsed;
-        return Acore::StringFormat("SBRPG\\t1\\tSTATUS\\t1\\t{}\\t{}\\t{}\\t{}\\t{:.2f}\\t{:.3f}\\t{}",
+        return Acore::StringFormat("1\tSTATUS\t1\t{}\t{}\t{}\t{}\t{:.2f}\t{:.3f}\t{}",
             ProfessionName(state->profession), state->route.size(), state->harvested, state->gatheredItems,
             perMinute, perMinute / 60.0, state->currentSpawn);
     }
 
     void SendAddon(Player* player, std::string const& payload)
     {
-        if (!player) return;
+        if (!player || !player->GetSession()) return;
+        std::string const wire = "SBRPG\t" + payload;
         WorldPacket data;
-        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, payload.c_str(), LANG_ADDON, CHAT_TAG_NONE,
-                                     player->GetGUID(), player->GetName());
-        ServerFacade::instance().SendPacket(player, &data);
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, nullptr, wire.c_str());
+        player->SendDirectMessage(&data);
     }
 
-    class SelfbotRpgAddonHook : public PlayerScript
+    class SelfbotRpgAddonHook final : public PlayerScript
     {
     public:
-        SelfbotRpgAddonHook() : PlayerScript("SelfbotRpgAddonHook", { PLAYERHOOK_ON_BEFORE_SEND_CHAT_MESSAGE, PLAYERHOOK_CAN_PLAYER_USE_GROUP_CHAT }) { }
-        bool OnPlayerCanUseChat(Player* /*player*/, uint32 type, uint32 lang, std::string& msg, Group* /*group*/) override
+        SelfbotRpgAddonHook() : PlayerScript("SelfbotRpgAddonHook") { }
+
+        bool TryHandle(Player* player, uint32 lang, std::string& msg)
         {
-            return !(lang == LANG_ADDON && (type == CHAT_MSG_PARTY || type == CHAT_MSG_RAID) && msg.rfind("SBRPG\\t1\\tCMD\\t", 0) == 0);
-        }
-        void OnPlayerBeforeSendChatMessage(Player* player, uint32& /*type*/, uint32& lang, std::string& msg) override
-        {
-            if (!player || lang != LANG_ADDON || msg.rfind("SBRPG\\t1\\tCMD\\t", 0) != 0) return;
-            std::string payload = msg.substr(12); std::istringstream in(payload); std::string directive, a, b;
-            std::getline(in, directive, '\t'); std::getline(in, a, '\t'); std::getline(in, b, '\t');
-            if (a == "START")
+            if (!player || lang != LANG_ADDON || msg.rfind("SBRPG\t", 0) != 0)
+                return false;
+
+            std::vector<std::string> fields;
+            std::istringstream input(msg.substr(6));
+            for (std::string field; std::getline(input, field, '\t');)
+                fields.push_back(field);
+            if (fields.size() < 2 || fields[0] != "1")
+                return true;
+
+            std::string const& opcode = fields[1];
+            if (opcode == "START" && fields.size() >= 4)
             {
                 std::string error;
-                if (!ConfigureFarm(player, a, b, &error)) SendAddon(player, "SBRPG\\t1\\tERROR\\t" + error);
+                if (!ConfigureFarm(player, fields[2], fields[3], &error))
+                    SendAddon(player, "1\tERROR\t" + error);
             }
-            else if (a == "STOP") Sbrpg::Stop(player);
-            else if (a == "SET")
+            else if (opcode == "STOP")
+                Sbrpg::Stop(player);
+            else if (opcode == "SET" && fields.size() >= 4)
             {
-                uint32 value = static_cast<uint32>(std::strtoul(b.c_str(), nullptr, 10)); std::string error;
-                if (!Sbrpg::SetOption(player, a, value, &error)) SendAddon(player, "SBRPG\\t1\\tERROR\\t" + error);
-                else SendAddon(player, "SBRPG\\t1\\tSETTING\\t" + a + "\\t" + b);
+                uint32 value = static_cast<uint32>(std::strtoul(fields[3].c_str(), nullptr, 10));
+                std::string error;
+                if (!Sbrpg::SetOption(player, fields[2], value, &error))
+                    SendAddon(player, "1\tERROR\t" + error);
+                else
+                    SendAddon(player, "1\tSETTING\t" + fields[2] + "\t" + fields[3]);
             }
+            else if (opcode != "STATUS")
+                SendAddon(player, "1\tERROR\tUNKNOWN_OPCODE");
+
             SendAddon(player, AddonStatus(player));
-            // Group traffic is consumed by OnPlayerCanUseChat. Do not rewrite
-            // type here: invalid chat enums create worldserver warning spam.
+            return true;
+        }
+
+        bool OnPlayerCanUseChat(Player* player, uint32 /*type*/, uint32 lang, std::string& msg, Player* /*receiver*/) override
+        {
+            return !TryHandle(player, lang, msg);
+        }
+
+        bool OnPlayerCanUseChat(Player* player, uint32 /*type*/, uint32 lang, std::string& msg, Group* /*group*/) override
+        {
+            return !TryHandle(player, lang, msg);
         }
     };
 
@@ -624,11 +686,62 @@ namespace Sbrpg
             } while (routeRows->NextRow());
         }
         Debug(player, Acore::StringFormat("loaded {} route nodes on map {} in zone {}", state.route.size(), player->GetMapId(), state.zoneId));
-        // Sort route by distance from starting position for a smooth cycle.
+        // Build a one-time nearest-neighbour route. Unlike radial sorting,
+        // this chooses each next point from the previous point and avoids the
+        // large return legs that caused visible backtracking.
         state.routeIndex = 0;
-        std::sort(state.route.begin(), state.route.end(),
-            [player](Sbrpg::RoutePoint const& a, Sbrpg::RoutePoint const& b)
-            { return player->GetExactDistSq(a.x, a.y, a.z) < player->GetExactDistSq(b.x, b.y, b.z); });
+        if (!state.route.empty())
+        {
+            std::vector<Sbrpg::RoutePoint> ordered;
+            ordered.reserve(state.route.size());
+            std::vector<bool> used(state.route.size(), false);
+            float lastX = player->GetPositionX(), lastY = player->GetPositionY(), lastZ = player->GetPositionZ();
+            for (size_t step = 0; step < state.route.size(); ++step)
+            {
+                size_t best = state.route.size();
+                float bestDistance = std::numeric_limits<float>::max();
+                for (size_t i = 0; i < state.route.size(); ++i)
+                {
+                    if (used[i]) continue;
+                    float const dx = state.route[i].x - lastX, dy = state.route[i].y - lastY, dz = state.route[i].z - lastZ;
+                    float const distance = dx * dx + dy * dy + dz * dz;
+                    if (distance < bestDistance) { bestDistance = distance; best = i; }
+                }
+                if (best == state.route.size()) break;
+                used[best] = true;
+                ordered.push_back(state.route[best]);
+                lastX = state.route[best].x; lastY = state.route[best].y; lastZ = state.route[best].z;
+            }
+            state.route = std::move(ordered);
+
+            // Bounded 2-opt refinement removes obvious crossings from the
+            // nearest-neighbour tour. Keep the work bounded: route planning
+            // runs on the map thread and must not evaluate every permutation.
+            size_t const limit = std::min<size_t>(state.route.size(), 96);
+            auto leg = [](Sbrpg::RoutePoint const& a, Sbrpg::RoutePoint const& b)
+            {
+                float const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+                return std::sqrt(dx * dx + dy * dy + dz * dz);
+            };
+            for (uint32 pass = 0; pass < 4 && limit > 3; ++pass)
+            {
+                bool changed = false;
+                for (size_t i = 1; i + 2 < limit; ++i)
+                    for (size_t j = i + 1; j + 1 < limit; ++j)
+                    {
+                        float const before = leg(state.route[i - 1], state.route[i]) +
+                            leg(state.route[j], state.route[j + 1]);
+                        float const after = leg(state.route[i - 1], state.route[j]) +
+                            leg(state.route[i], state.route[j + 1]);
+                        if (after + 1.0f < before)
+                        {
+                            std::reverse(state.route.begin() + i, state.route.begin() + j + 1);
+                            changed = true;
+                        }
+                    }
+                if (!changed) break;
+            }
+        }
         PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
         state.addedLootStrategy = !ai->HasStrategy("loot", BOT_STATE_NON_COMBAT);
         if (state.addedLootStrategy)

@@ -29,8 +29,9 @@ where farming started.
 ## Route behavior
 
 - Route points are loaded once at farm start and visited in cycles.
+- The route is built with nearest-neighbour ordering and a bounded 2-opt pass to remove obvious crossings.
 - A nearby **currently spawned** selected node is preferred over a database route point.
-- Candidate legs are scored using mmap `PathGenerator` cost for a bounded nearby shortlist.
+- Candidate legs are validated and steered using mmap `PathGenerator` cost and look-ahead points.
 - `PATHFIND_NOPATH`, empty nodes, and repeated no-progress nodes are temporarily blacklisted.
 - Movement follows the reachable mmap endpoint, using normal self-bot pacing.
 - The bot stops at the node and waits the configured settle delay before gathering.
@@ -80,6 +81,15 @@ rates, and effective per-run settings.
 ## Current limits
 
 The addon uses the versioned `SBRPG` addon-message protocol for commands,
-structured status, setting acknowledgements, errors, and debug frames. See
-`docs/addon-protocol.md`. Route planning is map/zone scoped—flight paths,
+structured status, setting acknowledgements, errors, and debug frames. The
+panel requests status only when opened and at a two-second interval while
+visible; it does not emit status chat spam. See `docs/addon-protocol.md`. Route planning is map/zone scoped—flight paths,
 vendors, bags, leveling mode, and autonomous questing are future features.
+
+## Roadmap
+
+- Timed farming configured from the main addon panel.
+- Remember the farm starting location and return there when the timer expires.
+- Keep combat behavior active during farming and return travel so the character
+  fights through enemies instead of dying on the way home.
+- Improve bag management, vendors, flight paths, leveling, and quest planning.

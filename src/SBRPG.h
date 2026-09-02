@@ -50,6 +50,8 @@ namespace Sbrpg
         uint32 routeIndex = 0;
         std::unordered_map<uint32, float> pathCostCache;
         uint32 lastRoutePlanMs = 0;
+        uint32 lastLiveScanMs = 0;
+        std::vector<ObjectGuid> liveNodes;
     };
 
     bool Start(Player* player, Profession profession, std::vector<uint32> entries, std::string* error);
