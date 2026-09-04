@@ -6,13 +6,19 @@
 #include <unordered_map>
 #include <vector>
 
+#include "Activity/ActivityState.h"
 #include "ObjectGuid.h"
+#include "Farm/LiveNodeCache.h"
+#include "Farm/RouteFollower.h"
+#include "Farm/StrategyLease.h"
+#include "Session/ActivitySession.h"
 
 class Player;
 
 namespace Sbrpg
 {
     enum class Profession : uint8_t { Mining, Herbalism, Both };
+    using FarmPhase = ActivityPhase;
 
     struct RoutePoint
     {
@@ -22,9 +28,8 @@ namespace Sbrpg
         bool visited = false;
     };
 
-    struct FarmState
+    struct FarmState : ActivityState
     {
-        bool active = false;
         Profession profession = Profession::Mining;
         std::vector<uint32> entries;
         uint32 harvested = 0;
@@ -33,16 +38,21 @@ namespace Sbrpg
         float lastTargetDistance = 0.0f;
         uint8 stuckChecks = 0;
         std::unordered_map<uint32, uint32> blacklistedUntilMs;
-        uint32 startedMs = 0;
         ObjectGuid lastGatheredNode;
-        bool addedLootStrategy = false;
+        uint32 lastGatheredMs = 0;
+        StrategyLease lootStrategy;
+        StrategyLease gatherStrategy;
         uint32 zoneId = 0;
         uint32 mapId = 0;
         bool startedInside = false;
+        ObjectGuid approachNode;
         ObjectGuid pendingGatherNode;
         ObjectGuid activeGatherNode;
         uint32 gatherReadyMs = 0;
         uint32 gatherAttemptedMs = 0;
+        uint32 gatherStartedMs = 0;
+        uint32 gatheredItemsAtAttempt = 0;
+        uint8 gatherRetries = 0;
         uint32 gatheredItems = 0;
         std::string activity = "starting";
         uint32 attemptsBeforeBlacklist = 0;
@@ -54,11 +64,18 @@ namespace Sbrpg
         uint32 routeIndex = 0;
         std::unordered_map<uint32, float> pathCostCache;
         uint32 lastRoutePlanMs = 0;
-        uint32 lastLiveScanMs = 0;
-        std::vector<ObjectGuid> liveNodes;
+        LiveNodeCache liveCache;
+        RouteStep step;
+        bool stepIssued = false;
+        uint32 stepBuiltMs = 0;
     };
 
-    bool Start(Player* player, Profession profession, std::vector<uint32> entries, std::string* error);
+    char const* PhaseLabel(FarmPhase phase);
+    void Transition(FarmState& state, FarmPhase phase, std::string reason);
+
+    bool Start(Player* player, Profession profession, std::vector<uint32> entries,
+               uint32 durationMinutes, std::string* error);
+    void Finish(Player* player, std::string reason);
     void Stop(Player* player);
     FarmState const* Get(Player* player);
     std::string Status(Player* player);

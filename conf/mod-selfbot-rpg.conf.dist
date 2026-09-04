@@ -13,8 +13,16 @@ SelfBotRpg.Enable = 1
 # Print route decisions to the self-bot's system chat and the worldserver debug
 # log. Useful for diagnosing unreachable or respawning nodes.
 SelfBotRpg.Debug = 0
+# Minimum normal-loot chance (%) for proactive material targets. This excludes
+# technically valid but negligible world-loot sources such as Mangy Wolf Linen
+# Cloth at 0.02%. Diagnostic source commands still show those sources.
+SelfBotRpg.MaterialMinimumChance = 1.0
+# Stop a material run when this percentage of bag capacity is used.
+SelfBotRpg.MaterialReservedBagPercent = 0
 SelfBotRpg.AttemptsBeforeBlacklist = 3
 SelfBotRpg.FailedNodeBlacklistSeconds = 120
 SelfBotRpg.EmptyNodeBlacklistSeconds = 120
 SelfBotRpg.StayInCurrentZone = 1
 SelfBotRpg.GatherSettleDelayMs = 1000
+# Minimum delay between SBRPG-owned action decisions. Stock playerbot action timing is unchanged.
+SelfBotRpg.ActionDelayMs = 1000
