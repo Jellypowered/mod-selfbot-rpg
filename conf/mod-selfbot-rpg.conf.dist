@@ -1,3 +1,4 @@
+[worldserver]
 # mod-selfbot-rpg
 #
 # The first feature slice is a self-bot-only gathering farming mode. It is
@@ -6,30 +7,53 @@
 # Enable = 1
 #   Present for deployment compatibility. The initial implementation is enabled
 #   when loaded; future slices will use this as the module-wide feature gate.
-[worldserver]
-
 SelfBotRpg.Enable = 1
 
 # Print route decisions to the self-bot's system chat and the worldserver debug
 # log. Useful for diagnosing unreachable or respawning nodes.
 SelfBotRpg.Debug = 0
+
 # Minimum normal-loot chance (%) for proactive material targets. This excludes
 # technically valid but negligible world-loot sources such as Mangy Wolf Linen
 # Cloth at 0.02%. Diagnostic source commands still show those sources.
+# Valid range is 0-100 ie: 0.5, 50, 90, 100, etc.
 SelfBotRpg.MaterialMinimumChance = 1.0
+
 # Stop a material run when this percentage of bag capacity is used.
+# 0 = Stop when bags are full, (0% space remaining)
+# 10 = Stop when 10% of total bag space remaining.
 SelfBotRpg.MaterialReservedBagPercent = 0
+
+#################################################################
+# Timeouts for Actions
+# Keeps your SelfBot from standing around as long failing
+# actions or trying to harvest empty/unavailable nodes.
 SelfBotRpg.AttemptsBeforeBlacklist = 3
 SelfBotRpg.FailedNodeBlacklistSeconds = 120
 SelfBotRpg.EmptyNodeBlacklistSeconds = 120
+
+#################################################################
+# This setting is technically invalid and should always be set to 1 right now. 
+# It's here for future development, but as implemented everything is based on
+# the current zone a session is started.
 SelfBotRpg.StayInCurrentZone = 1
+
+#################################################################
+# The following delay settings are to make up for system power.
+# If your host is slower, adjust these up (1500,2000ish) to give more time for processing.
+# I personally would not go below 500ms even on a fast host.
 SelfBotRpg.GatherSettleDelayMs = 1000
-# Minimum delay between SBRPG-owned action decisions. Stock playerbot action timing is unchanged.
+
+# Minimum delay (in ms) between SBRPG-owned action decisions. Stock playerbot action timing is unchanged.
 SelfBotRpg.ActionDelayMs = 1000
-# Comma-separated fishing bobber gameobject entries used by material Fishing runs.
+
+# Comma-separated fishing bobber gameobject entries used by material Fishing runs. 
+# This should probably be hardcoded, as it's unlikely to change.
 SelfBotRpg.FishingBobberEntries = 35591
 
 # Apply lures automatically when fishing, when a usable lure is available.
+# Currently lures are hardcoded to use the best/highest quality lure, so if you don't want
+# them used, only purchase lower tier lures.
 SelfBotRpg.UseLures = 1
 
 # Fishing routing defaults: open water is safest; pool prioritization is opt-in.
@@ -37,7 +61,11 @@ SelfBotRpg.FishingPrioritizePools = 0
 SelfBotRpg.FishingOpenWaterOnly = 1
 
 # Maximum bounded distance used to search for reachable fishing water.
+# SelfbotRpg will move to water within this range on it's own, if the distance to water
+# is greater than this value, it will fail.
 SelfBotRpg.FishingSearchDistance = 500.0
 
 # Preferred maximum distance from the water edge when selecting a cast point.
+# 12 is a bit far, and may have some failed casts. In personal testing I found 8 to be
+# sufficent but i'd like more feedback.
 SelfBotRpg.FishingCastDistance = 12.0
