@@ -47,3 +47,9 @@ incomplete response. The addon stores panel position, selected profession,
 resource, material, search text, duration, and quantity in `SelfBotRPGDB`.
 `/sbrpgchat <command>` is an intentionally manual-only emergency chat fallback;
 it is never automatically selected by the addon.
+
+Node `STATUS` phase/reason fields may report live-node reroutes, confirmed-empty
+route-point skips, post-combat loot recovery, or bounded gather-pending timeout.
+These are informational only; node interaction and loot remain owned by stock
+playerbot actions. The optional `mod-junk-to-gold` module does not change this
+protocol and is not required for the addon or server module to function.

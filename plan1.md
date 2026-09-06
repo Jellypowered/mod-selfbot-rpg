@@ -22,7 +22,7 @@ high character level because stock `grind target` rejects gray mobs through
 open-world grinder. Only creatures proven to be sources for the selected
 material are valid proactive targets.
 
-## Current implementation snapshot (2026-09-05)
+## Current implementation snapshot (beta checkpoint)
 
 ### Phase 6 completion audit
 
@@ -50,7 +50,9 @@ travel controls are intentionally not exposed as implemented features.
 The module now has a working node-farming path and a working material-farming
 implementation slice. The addon UI and `JLYRPG2` protocol are implemented for
 catalog browsing, source/status requests, material starts, and node-farming
-compatibility. The required full worldserver build passes.
+compatibility. The required full worldserver build passes. The prototype is beta-ready for
+broader user testing; live herb/mining node awareness, reroute status, and
+post-combat loot recovery are now included in the implementation.
 
 Implemented end-to-end behavior includes:
 
@@ -70,7 +72,12 @@ Implemented end-to-end behavior includes:
 - normal playerbot fishing-pole equip plus main-hand/off-hand restoration via
   proper inventory/equipment swaps;
 - capability negotiation and bounded catalog/source protocol frames;
-- scrollable icon-backed node-resource and material pickers with tooltips.
+- scrollable icon-backed node-resource and material pickers with tooltips;
+- structured live node observations, stable database spawn-ID association,
+  live-first selection, confirmed-empty skipping, and in-flight reroute status;
+- multiple post-combat corpse GUID tracking, bounded 10-second loot/gather
+  recovery, closer loot approach, and optional `mod-junk-to-gold`
+  compatibility without a module dependency.
 
 The remaining work is primarily wider profession-material soak validation,
 custom-database validation, coordination with selfbot-owned additional corpse
@@ -1192,8 +1199,12 @@ skill/tool preflight, safer active-bobber handling, pool-miss fallback, and
 periodic pool rediscovery. The optional persisted `UseLures` setting controls best-effort lure
 application immediately before each cast without making lures mandatory.
 `FishingSearchDistance` bounds water discovery and `FishingCastDistance` bounds
-shoreline cast-point selection. Remaining work is expanded custom-database
-validation and live profession-family soak testing.
+shoreline cast-point selection. Remaining work is expanded custom-database validation, live profession-family
+soak testing, and verification of the stock `mod-playerbots` loot lifecycle
+when optional loot-processing modules such as `mod-junk-to-gold` are installed.
+Node live-awareness is now beta-ready: live observations are associated to
+route points by stable spawn ID, visible live nodes are preferred, confirmed
+empty points are temporarily skipped, and reroutes are surfaced in status.
 External catalog/config-file loading is explicitly deferred; the current
 catalog remains compiled into the module.
 
@@ -2072,7 +2083,8 @@ owned by the established playerbot systems rather than unsafe module shortcuts.
 - reconfigure CMake after adding translation units;
 - compile all affected C++ units from `compile_commands.json`;
 - full module/worldserver link;
-- `luac -p addon/SelfBotRPG/*.lua`;
+- `luac -p addon/SelfBotRPG/SelfBotRPG.lua`;
+- verify with and without optional `mod-junk-to-gold`;
 - verify the gear-button settings overlay exposes every `.conf.dist` option;
 - verify Apply sends validated `SET_CONFIG` values to the current session;
 - verify Reset Defaults and `SelfBotRPGDB.Settings` persistence across reload;

@@ -1,5 +1,7 @@
 # mod-selfbot-rpg
 
+## TLDR: Manage your expectations.
+
 `mod-selfbot-rpg` adds gathering-focused farming tools for AzerothCore WotLK
 servers running `mod-playerbots`. It is designed to extend the existing
 selfbot rather than replace or globally alter playerbot behavior.
@@ -37,8 +39,13 @@ AiPlayerbot.SelfBotLevel = 1
 ```
 `Set this to 2 or change your account security level.`
 
-5. **Live testing:** fishing, custom database rows, profession requirements,
-   bag handling, and long-duration runs still benefit from careful live testing.
+5. **Beta status:** node live-awareness is working well in prototype testing,
+   but fishing, custom database rows, profession requirements, bag handling,
+   loot edge cases, and long-duration runs still need broader live testing.
+
+6. **PRIVATE USE ONLY** It should go without saying, this is for personal use, on a server you host only.
+
+7. **It's slower than third party bots** This ain't Honorb*ddy, W\*obot, or any other highly optimized for pay botting solution. I've made efforts to make it efficient, but it does not mimic a real player. This module works within the limitations of the hooks available and functionality provided by `mod-playerbots`. Loot handling remains dependent on stock playerbot behavior and should be reported if items are actually missed.
 
 If something behaves incorrectly, please report it through the repository's
 **Issues** section. Include the module version or commit, AzerothCore and
@@ -230,10 +237,17 @@ Important behavior:
 - Stock loot is prioritized over material travel.
 - Normal playerbot chest and gameobject loot remains enabled.
 - During route movement and return, queued kills and chests are approached with
-  normal bounded movement before stock playerbot actions open and loot them.
+  normal bounded movement before stock playerbot actions open and loot them;
+- multiple post-combat corpse GUIDs are retained independently for stock loot;
+- node/material loot targets expire after bounded recovery time (currently 10
+  seconds once interaction is stalled), while active casts/windows remain
+  protected;
 - All corpse items, including gray items, are eligible during a material run.
 - SBRPG does not repeatedly open, close, replace, or clear stock loot targets.
 - Empty or stale corpses receive bounded recovery time and are then released.
+- `mod-junk-to-gold` is optional: its loot-item hook may sell gray items after
+  they are stored, but SBRPG has no dependency on that module and does not
+  dereference the temporary loot-item pointer.
 - A return request does not abandon active combat or post-combat corpse loot.
 - Harvesting is not eligible until normal loot is complete.
 - Corpse harvest requirements are resolved from source metadata and validated
@@ -420,7 +434,7 @@ pending`, `approaching loot`, `harvesting`, `recovering`, `no safe hotspot`, or
 |---|---|
 | Node farming | Mining, herbalism, both, named resources, or current-zone mode. |
 | Material farming | Creature loot, skinning/corpse harvest, fishing, and item-linked node requests where supported by the catalog. |
-| Fishing | Targeted-fish or current-zone sessions; open water by default, optional pools (not tested yet), cataloged-fish tracking, and best-effort lures. |
+| Fishing | Targeted-fish or current-zone sessions; open water by default, optional pools, cataloged-fish tracking, and best-effort lures. |
 | Level-appropriate source filtering | Not implemented; source identity, chance, map/zone, attackability, LOS, range, and rank are checked. |
 | Cross-zone travel | Not implemented; the character must already be in the map/zone containing sources. |
 | Session controls | Duration, quantity goal, bag reserve, stop-and-return, combat recovery, and captured start position. |
@@ -448,6 +462,11 @@ Implemented and build-validated:
   tooltips, pickers, keyboard confirmation, and settings persistence;
 - fishing search, cast/bobber/reel/loot flow, configurable distances, pole
   equipment, equipment restoration, and cataloged-fish accounting;
+- live node observations, stable spawn-ID association, unavailable-node
+  skipping, live-first routing, and reroute status reporting;
+- multi-corpse combat-loot tracking, post-combat loot recovery, bounded
+  10-second stalled-loot/gather-pending recovery, and optional
+  `mod-junk-to-gold` coexistence;
 - queued kill and chest approach during routing and return;
 - automatic selfbot enable/disable ownership handling;
 - required full worldserver build.
@@ -456,6 +475,8 @@ Still requiring broader runtime or custom-database validation:
 
 - player/source level-appropriateness filtering and low-level preflight rejection;
 - long material and fishing soak tests;
+- live herb/mining node-awareness soak tests, including nodes spawning or
+  despawning while travelling;
 - solo/party/raid addon cross-talk testing;
 - all corpse-harvest multi-yield and external-skinning cases;
 - custom database validation of Herbalism, Mining, and Engineering corpse harvest;
@@ -474,6 +495,8 @@ src/SBRPG.cpp                         controller, commands, protocol dispatch
 src/Activity/ActivityState.h          activity state and telemetry
 src/Session/ActivitySession.*         start/stop/return lifecycle
 src/Farm/RouteFollower.*              bounded mmap route following
+src/Farm/LiveNodeCache.h              structured live node observations
+src/Farm/NodeRepository.*             DB route/live-node association and selection
 src/Materials/MaterialCatalog.*       exact item catalog and metadata
 src/Materials/LootSourceIndex.*       reverse loot-source discovery
 src/Materials/CreatureSpawnRepository.*
@@ -510,3 +533,6 @@ When extending the module, preserve the project principles: use existing core
 and playerbot APIs, keep movement mmap-validated and bounded, keep protocol
 replies whisper-isolated, avoid fabricating travel completion, and prefer a
 clear refusal over unsafe or ambiguous automation.
+
+## Troubleshooting: 
+1. Main thing I wanted to add here, if your runs keep getting logged out, be paitent. A `mod-playerbots` commit will be merged in soon that addresses this. You could use something like AHK to send a space bar to the wow window every 4-5 minutes or so if you really wanted. I'd be watching sessions so you can provide feedback and help improve the module! Just make sure to manage your expectations, i'm not a wizard, Harry.

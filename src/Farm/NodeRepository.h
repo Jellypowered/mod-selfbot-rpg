@@ -17,7 +17,8 @@ namespace Sbrpg
     public:
         static std::vector<RoutePoint> LoadRoute(Player* player, FarmState const& state,
             std::function<bool(uint32)> const& isGatheringEntry);
-        static std::vector<ObjectGuid> ScanLive(Player* player, FarmState const& state, float radius);
+        static std::vector<LiveNodeObservation> ScanLive(Player* player, FarmState const& state, float radius);
+        static void UpdateLiveAssociations(Player* player, FarmState& state, float radius, uint32 now);
         static bool SelectNextRoute(Player* player, FarmState& state, uint32& spawn, float& x, float& y, float& z);
     };
 }

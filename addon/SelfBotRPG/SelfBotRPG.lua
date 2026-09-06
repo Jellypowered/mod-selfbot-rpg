@@ -38,6 +38,7 @@ local materialSourceRequestId=nil
 local start,materialStart,fishingZoneStart,stop
 local durationBox,quantityBox,materialSearch,fishingTargetButton
 local prioritizePoolsCheck,openWaterOnlyCheck
+local CloseSettingsWindow
 local SendProtocol
 local ApplySavedSettings
 local nextRequestId=0
@@ -391,12 +392,12 @@ for index,key in ipairs(settingOrder) do
 end
 local applySettings=CreateFrame("Button",nil,settingsPanel,"UIPanelButtonTemplate");applySettings:SetSize(105,24);applySettings:SetPoint("BOTTOMLEFT",18,15);applySettings:SetText("Apply");applySettings:SetScript("OnClick",ApplySettings)
 local resetSettings=CreateFrame("Button",nil,settingsPanel,"UIPanelButtonTemplate");resetSettings:SetSize(105,24);resetSettings:SetPoint("BOTTOM",0,15);resetSettings:SetText("Reset Defaults");resetSettings:SetScript("OnClick",ResetSettings)
-local closeSettings=CreateFrame("Button",nil,settingsPanel,"UIPanelButtonTemplate");closeSettings:SetSize(85,24);closeSettings:SetPoint("BOTTOMRIGHT",-18,15);closeSettings:SetText("Close");closeSettings:SetScript("OnClick",CloseSettingsWindow)
+local closeSettings=CreateFrame("Button",nil,settingsPanel,"UIPanelButtonTemplate");closeSettings:SetSize(85,24);closeSettings:SetPoint("BOTTOMRIGHT",-18,15);closeSettings:SetText("Close");closeSettings:SetScript("OnClick",function()CloseSettingsWindow()end)
 settingsPanel:SetScript("OnShow",function()RequestStatus();for key,box in pairs(settings) do box:SetText(settingsDB[key] or settingDefaults[key]) end end)
 local function CloseMainWindow()
  materialPopup:Hide();addon:Hide()
 end
-local function CloseSettingsWindow()
+CloseSettingsWindow=function()
  ApplySettings();settingsPanel:Hide()
 end
 local function HandleInputKey(self,key,saveFields)
@@ -460,6 +461,9 @@ ButtonTooltip(materialStart,"Start selected target","Starts material farming, or
 ButtonTooltip(fishingZoneStart,"Fish current zone","Fishes the current zone using open water by default, with optional pool prioritization.")
 ButtonTooltip(stop,"Stop current run","Stops farming/material activity and restores normal playerbot strategies.")
 ButtonTooltip(gear,"Open settings","Configure node-farming behavior. Apply sends settings to the active run; Reset Defaults restores local defaults.")
+ButtonTooltip(applySettings,"Apply settings","Save these values and send them to the active run and future runs.")
+ButtonTooltip(resetSettings,"Reset defaults","Restore the local default values without starting or stopping a run.")
+ButtonTooltip(closeSettings,"Close settings","Apply any changes, then close the settings window.")
 -- Manual-only emergency fallback. It is never selected automatically, so
 -- addon protocol traffic cannot collide with playerbot chat handlers.
 SLASH_SELFBOTRPG1="/sbrpg";SlashCmdList.SELFBOTRPG=function(text)

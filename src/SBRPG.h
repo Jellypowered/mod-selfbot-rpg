@@ -20,12 +20,26 @@ namespace Sbrpg
     enum class Profession : uint8_t { Mining, Herbalism, Both };
     using FarmPhase = ActivityPhase;
 
+    enum class NodeObservationState : uint8_t
+    {
+        Unknown,
+        Available,
+        Unavailable,
+        TravelCandidate,
+        Gathering,
+        TemporarilySkipped
+    };
+
     struct RoutePoint
     {
         uint32 spawn = 0;
         uint32 entry = 0;
         float x = 0, y = 0, z = 0;
         bool visited = false;
+        NodeObservationState observation = NodeObservationState::Unknown;
+        ObjectGuid liveGuid;
+        float liveX = 0.0f, liveY = 0.0f, liveZ = 0.0f;
+        uint32 observedMs = 0;
     };
 
     struct FarmState : ActivityState
@@ -64,6 +78,9 @@ namespace Sbrpg
         uint32 emptyBlacklistSeconds = 0;
         uint32 gatherSettleDelayMs = 0;
         bool stayInCurrentZone = true;
+        bool combatInterrupted = false;
+        std::unordered_map<ObjectGuid, uint32> combatLootSinceMs;
+        uint32 pendingGatherSinceMs = 0;
         std::vector<RoutePoint> route;
         uint32 routeIndex = 0;
         std::unordered_map<uint32, float> pathCostCache;

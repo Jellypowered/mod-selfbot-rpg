@@ -1009,7 +1009,11 @@ namespace
                 // Give stock loot time to complete or replace a target. An
                 // empty corpse can only be discovered after opening it, so an
                 // invalid target must not stall material farming forever.
-                if (activeLoot.IsLootPossible(bot))
+                WorldObject* activeLootObject = activeLoot.GetWorldObject(bot);
+                bool const activeLootInRange = activeLootObject &&
+                    bot->GetDistance(activeLootObject) <= sPlayerbotAIConfig.contactDistance + 0.5f;
+                if ((!activeLootInRange && activeLoot.IsLootPossible(bot)) ||
+                    !bot->GetLootGUID().IsEmpty())
                 {
                     state.invalidLootSinceMs = 0;
                     SetMaterialPhase(bot, state, state.session.returnRequested ?
@@ -1018,13 +1022,13 @@ namespace
                 }
                 if (state.invalidLootSinceMs == 0)
                     state.invalidLootSinceMs = now;
-                if (bot->IsInCombat() || now - state.invalidLootSinceMs < 15000 ||
+                if (bot->IsInCombat() || now - state.invalidLootSinceMs < 10000 ||
                     !bot->GetLootGUID().IsEmpty())
                 {
                     SetMaterialPhase(bot, state, "waiting for stock loot target recovery");
                     return false;
                 }
-                Debug(bot, Acore::StringFormat("material releasing stale loot target after 15s: guid {}",
+                Debug(bot, Acore::StringFormat("material releasing stale loot target after 10s: guid {}",
                     activeLoot.guid.GetCounter()));
                 AI_VALUE(LootObjectStack*, "available loot")->Remove(activeLoot.guid);
                 context->GetValue<LootObject>("loot target")->Set(LootObject());
@@ -1042,7 +1046,7 @@ namespace
             {
                 LootObject pendingLoot = AI_VALUE(LootObjectStack*, "available loot")->GetLoot();
                 WorldObject* pendingObject = pendingLoot.GetWorldObject(bot);
-                if (pendingObject && bot->GetDistance(pendingObject) > sPlayerbotAIConfig.lootDistance - 2.0f)
+                if (pendingObject && bot->GetDistance(pendingObject) > sPlayerbotAIConfig.contactDistance + 0.5f)
                 {
                     SetMaterialPhase(bot, state, state.session.returnRequested ?
                         "approaching loot before return" : "approaching nearby loot");
@@ -1078,11 +1082,10 @@ namespace
                         if (state.corpseWaitSinceMs == 0)
                             state.corpseWaitSinceMs = now;
                         // Ranged kills commonly land outside the stock
-                        // LootDistance (15yd by default), where `loot` will
-                        // never select the queued corpse. Approach it only
-                        // while stock has no selected/open loot, using the same
+                        // Approach all the way to contact range so the stock
+                        // loot action can interact reliably, using the same
                         // bounded mmap movement as hotspot travel.
-                        if (bot->GetDistance(corpse) > sPlayerbotAIConfig.lootDistance - 2.0f)
+                        if (bot->GetDistance(corpse) > sPlayerbotAIConfig.contactDistance + 0.5f)
                         {
                             SetMaterialPhase(bot, state, state.session.returnRequested ?
                                 "approaching corpse before return" : "approaching corpse");
@@ -1117,7 +1120,7 @@ namespace
                                     needsLoot ? "yes" : "no", static_cast<uint32>(corpseLoot.skillId)));
                             }
                         }
-                        uint32 const corpseWaitLimit = state.session.returnRequested ? 10000 : 30000;
+                        uint32 const corpseWaitLimit = 10000;
                         if (now - state.corpseWaitSinceMs < corpseWaitLimit)
                         {
                             SetMaterialPhase(bot, state, state.session.returnRequested ?
@@ -1646,11 +1649,23 @@ namespace
             mutableState.lastActionMs = actionNow;
             if (bot->IsInCombat())
             {
+                mutableState.combatInterrupted = true;
                 SetPhase(mutableState, Sbrpg::FarmPhase::CombatPaused,
                     mutableState.session.returnRequested ? "combat active; return-home objective retained" : "combat active; farm destination retained");
                 mutableState.step.valid = false;
                 mutableState.stepIssued = false;
                 return false;
+            }
+            if (mutableState.combatInterrupted)
+            {
+                mutableState.combatInterrupted = false;
+                mutableState.step.valid = false;
+                mutableState.stepIssued = false;
+                mutableState.targetSinceMs = 0;
+                mutableState.stuckChecks = 0;
+                if (bot->isMoving())
+                    bot->StopMoving();
+                SetPhase(mutableState, Sbrpg::FarmPhase::Looting, "combat ended; checking nearby loot");
             }
             if (bot->isDead())
             {
@@ -1675,6 +1690,7 @@ namespace
                         bagsFull ? "bags full" : "timed session complete");
                     mutableState.currentSpawn = 0;
                     mutableState.pendingGatherNode = ObjectGuid::Empty;
+                    mutableState.pendingGatherSinceMs = 0;
                     mutableState.step.valid = false;
                     mutableState.stepIssued = false;
                     mutableState.targetSinceMs = 0;
@@ -1696,16 +1712,20 @@ namespace
             LootObject stockLootTarget = AI_VALUE(LootObject, "loot target");
             if (!stockLootTarget.IsEmpty())
             {
+                WorldObject* stockLootObject = stockLootTarget.GetWorldObject(bot);
+                bool const stockLootInRange = stockLootObject &&
+                    bot->GetDistance(stockLootObject) <= sPlayerbotAIConfig.contactDistance + 0.5f;
                 if (mutableState.lootWaitSinceMs == 0)
                     mutableState.lootWaitSinceMs = now;
-                if (stockLootTarget.IsLootPossible(bot) || !bot->GetLootGUID().IsEmpty() ||
-                    bot->IsInCombat() || now - mutableState.lootWaitSinceMs < 15000)
+                if ((!stockLootInRange && stockLootTarget.IsLootPossible(bot)) ||
+                    !bot->GetLootGUID().IsEmpty() || bot->IsInCombat() ||
+                    now - mutableState.lootWaitSinceMs < 10000)
                 {
                     SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
                         mutableState.session.returnRequested ? "finishing active loot before return" : "stock playerbots owns active loot target");
                     return false;
                 }
-                Debug(bot, Acore::StringFormat("releasing stale loot target after 15s: guid {}",
+                Debug(bot, Acore::StringFormat("releasing stale loot target after 10s: guid {}",
                     stockLootTarget.guid.GetCounter()));
                 AI_VALUE(LootObjectStack*, "available loot")->Remove(stockLootTarget.guid);
                 botAI->GetAiObjectContext()->GetValue<LootObject>("loot target")->Set(LootObject());
@@ -1713,6 +1733,26 @@ namespace
             }
             else
                 mutableState.lootWaitSinceMs = 0;
+
+            // Keep multiple post-combat corpses available until stock loot has
+            // selected them. Expire only unselected corpses after 10 seconds;
+            // an actively selected/open corpse is handled by the stock-target
+            // timeout above.
+            for (auto lootIt = mutableState.combatLootSinceMs.begin();
+                lootIt != mutableState.combatLootSinceMs.end(); )
+            {
+                ObjectGuid const guid = lootIt->first;
+                LootObject const selected = AI_VALUE(LootObject, "loot target");
+                bool const selectedOrOpen = selected.guid == guid || bot->GetLootGUID() == guid;
+                if (!selectedOrOpen && now - lootIt->second >= 10000)
+                {
+                    AI_VALUE(LootObjectStack*, "available loot")->Remove(guid);
+                    Debug(bot, Acore::StringFormat("combat corpse loot timed out after 10s: guid {}", guid.GetCounter()));
+                    lootIt = mutableState.combatLootSinceMs.erase(lootIt);
+                }
+                else
+                    ++lootIt;
+            }
 
             // Available loot can be a nearby chest/gameobject or a combat
             // corpse that has not yet become the selected loot target. Approach
@@ -1722,7 +1762,7 @@ namespace
             {
                 LootObject pendingLoot = AI_VALUE(LootObjectStack*, "available loot")->GetLoot();
                 WorldObject* pendingObject = pendingLoot.GetWorldObject(bot);
-                if (pendingObject && bot->GetDistance(pendingObject) > sPlayerbotAIConfig.lootDistance - 2.0f)
+                if (pendingObject && bot->GetDistance(pendingObject) > sPlayerbotAIConfig.contactDistance + 0.5f)
                 {
                     SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
                         mutableState.session.returnRequested ? "approaching loot before return" : "approaching nearby loot");
@@ -1750,15 +1790,28 @@ namespace
             {
                 mutableState.liveCache.Replace(now,
                     Sbrpg::NodeRepository::ScanLive(bot, mutableState, liveScanRadius));
+                Sbrpg::NodeRepository::UpdateLiveAssociations(bot, mutableState, liveScanRadius, now);
+                if (runtimeSettings.debug)
+                    Debug(bot, Acore::StringFormat("live node scan: {} observations, {}ms age",
+                        mutableState.liveCache.Observations().size(), now - mutableState.liveCache.LastRefreshMs()));
             }
+            auto setNodeObservation = [&mutableState](ObjectGuid guid, Sbrpg::NodeObservationState observation)
+            {
+                auto routePoint = std::find_if(mutableState.route.begin(), mutableState.route.end(),
+                    [guid](Sbrpg::RoutePoint const& point) { return point.liveGuid == guid; });
+                if (routePoint != mutableState.route.end())
+                    routePoint->observation = observation;
+            };
             if (!mutableState.activeGatherNode.IsEmpty())
             {
+                setNodeObservation(mutableState.activeGatherNode, Sbrpg::NodeObservationState::Gathering);
                 GameObject* activeNode = botAI->GetGameObject(mutableState.activeGatherNode);
                 if (!activeNode || !activeNode->IsInWorld() || !activeNode->isSpawned())
                 {
                     ++mutableState.harvested;
                     mutableState.currentSpawn = 0;
                     mutableState.pendingGatherNode = ObjectGuid::Empty;
+                    mutableState.pendingGatherSinceMs = 0;
                     mutableState.activeGatherNode = ObjectGuid::Empty;
                     mutableState.gatherStartedMs = 0;
                     SetPhase(mutableState, Sbrpg::FarmPhase::SelectingNode, "stock gather completed; node despawned");
@@ -1769,7 +1822,7 @@ namespace
                 // the first stock handoff, suppress only SBRPG's own selection;
                 // the stock `gather` strategy remains free to detect/reopen a
                 // multi-yield node through its normal lifecycle.
-                if (now - mutableState.gatherStartedMs < 30000)
+                if (now - mutableState.gatherStartedMs < 10000)
                 {
                     if (now - mutableState.gatherAttemptedMs >= 5000 && !bot->IsNonMeleeSpellCast(true) &&
                         bot->GetLootGUID() != mutableState.activeGatherNode)
@@ -1792,10 +1845,36 @@ namespace
                 mutableState.activeGatherNode = ObjectGuid::Empty;
                 mutableState.gatherStartedMs = 0;
                 mutableState.pendingGatherNode = ObjectGuid::Empty;
+                mutableState.pendingGatherSinceMs = 0;
                 mutableState.currentSpawn = 0;
                 SetPhase(mutableState, Sbrpg::FarmPhase::SelectingNode, "gather timed out; replanning");
                 return true;
             }
+            // A selected database point is only considered empty once it is
+            // inside the observed area and the live scan found no matching
+            // spawned node. Unknown points remain valid discovery targets.
+            if (mutableState.currentSpawn != 0)
+            {
+                auto current = std::find_if(mutableState.route.begin(), mutableState.route.end(),
+                    [&mutableState](Sbrpg::RoutePoint const& point) { return point.spawn == mutableState.currentSpawn; });
+                if (current != mutableState.route.end() &&
+                    current->observation == Sbrpg::NodeObservationState::Unavailable)
+                {
+                    uint32 const blacklistSeconds = mutableState.emptyBlacklistSeconds;
+                    mutableState.blacklistedUntilMs[current->spawn] = now + 1000 * blacklistSeconds;
+                    current->observation = Sbrpg::NodeObservationState::TemporarilySkipped;
+                    mutableState.currentSpawn = 0;
+                    mutableState.step.valid = false;
+                    mutableState.stepIssued = false;
+                    mutableState.targetSinceMs = 0;
+                    mutableState.stuckChecks = 0;
+                    SetPhase(mutableState, Sbrpg::FarmPhase::SelectingNode, "selected node absent from observed area");
+                    Debug(bot, Acore::StringFormat("spawn {} absent from live scan; skipped for {} seconds",
+                        current->spawn, blacklistSeconds));
+                    return true;
+                }
+            }
+
             for (ObjectGuid const& guid : mutableState.liveCache.Guids())
             {
                 GameObject* go = botAI->GetGameObject(guid);
@@ -1807,6 +1886,19 @@ namespace
                 auto blocked = mutableState.blacklistedUntilMs.find(go->GetSpawnId());
                 if (blocked != mutableState.blacklistedUntilMs.end() && now < blocked->second)
                     continue;
+                bool const reroutingToLiveNode = mutableState.currentSpawn != 0;
+                if (reroutingToLiveNode)
+                {
+                    mutableState.currentSpawn = 0;
+                    mutableState.step.valid = false;
+                    mutableState.stepIssued = false;
+                    mutableState.targetSinceMs = 0;
+                    mutableState.stuckChecks = 0;
+                    SetPhase(mutableState, Sbrpg::FarmPhase::ApproachingNode,
+                        Acore::StringFormat("rerouting to live node (entry {}, spawn {})", go->GetEntry(), go->GetSpawnId()));
+                    Debug(bot, Acore::StringFormat("rerouting from database route to live node: entry {}, spawn {}, distance {:.1f}",
+                        go->GetEntry(), go->GetSpawnId(), bot->GetDistance(go)));
+                }
                 // Do not insert this GO into LootObjectStack ourselves.
                 // Give stock gathering a bounded opportunity to claim this
                 // exact GUID. A corpse loot target is not evidence that this
@@ -1817,22 +1909,37 @@ namespace
                 if (mutableState.pendingGatherNode != go->GetGUID())
                 {
                     mutableState.pendingGatherNode = go->GetGUID();
+                    mutableState.pendingGatherSinceMs = now;
                     mutableState.gatherReadyMs = now + 6000;
+                }
+                else if (now - mutableState.pendingGatherSinceMs >= 10000 &&
+                    !stockOwnsNode && !bot->IsNonMeleeSpellCast(true))
+                {
+                    mutableState.blacklistedUntilMs[go->GetSpawnId()] = now + 30000;
+                    mutableState.pendingGatherNode = ObjectGuid::Empty;
+                    mutableState.pendingGatherSinceMs = 0;
+                    SetPhase(mutableState, Sbrpg::FarmPhase::SelectingNode, "stock gather pending timed out; skipping live node");
+                    Debug(bot, Acore::StringFormat("live node gather pending timed out after 10s: spawn {}", go->GetSpawnId()));
+                    continue;
                 }
                 if (stockOwnsNode)
                 {
+                    setNodeObservation(go->GetGUID(), Sbrpg::NodeObservationState::Gathering);
                     mutableState.gatherReadyMs = now + 6000;
-                    SetPhase(mutableState, Sbrpg::FarmPhase::Looting, "stock gather owns live node");
+                    SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
+                        reroutingToLiveNode ? "rerouted to live node; stock gather owns it" : "stock gather owns live node");
                     return false;
                 }
                 if (now < mutableState.gatherReadyMs)
                 {
-                    SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending, "waiting for stock gather claim");
+                    SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending,
+                        reroutingToLiveNode ? "rerouting to live node; waiting for stock gather claim" : "waiting for stock gather claim");
                     return false;
                 }
                 if (bot->GetDistance(go) > sPlayerbotAIConfig.contactDistance + 0.5f)
                 {
-                    SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending, "approaching live gathering node");
+                    SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending,
+                        reroutingToLiveNode ? "rerouting to live node" : "approaching live gathering node");
                     MoveNear(go, sPlayerbotAIConfig.contactDistance,
                         MovementPriority::MOVEMENT_NORMAL);
                     return false;
@@ -1854,6 +1961,7 @@ namespace
                 bool const queued = AI_VALUE(LootObjectStack*, "available loot")->Add(go->GetGUID());
                 if (queued)
                 {
+                    setNodeObservation(go->GetGUID(), Sbrpg::NodeObservationState::Gathering);
                     mutableState.activeGatherNode = go->GetGUID();
                     mutableState.gatherStartedMs = now;
                     mutableState.gatherAttemptedMs = now;
@@ -1864,6 +1972,7 @@ namespace
                     SetPhase(mutableState, Sbrpg::FarmPhase::Looting, "gather node already queued");
                 mutableState.currentSpawn = 0;
                 mutableState.pendingGatherNode = ObjectGuid::Empty;
+                mutableState.pendingGatherSinceMs = 0;
                 // Yield immediately so stock loot/gather can select, move to,
                 // and open the node without this controller replacing its move.
                 return false;
@@ -2209,6 +2318,8 @@ namespace
             }
 
             auto it = player ? states.find(player->GetGUID()) : states.end();
+            if (it != states.end() && it->second.active && lootGuid.IsCreature())
+                it->second.combatLootSinceMs.erase(lootGuid);
             if (it == states.end() || !it->second.active || !lootGuid.IsGameObject() ||
                 !HasEntry(it->second, lootGuid.GetEntry()))
                 return;
@@ -2243,6 +2354,15 @@ namespace
         {
             if (!player || !killed)
                 return;
+            auto nodeIt = states.find(player->GetGUID());
+            if (nodeIt != states.end() && nodeIt->second.active)
+            {
+                // Keep corpse discovery local to the active node run, but let
+                // the stock loot strategy retain ownership of opening and
+                // looting. Add() is idempotent when stock already queued it.
+                if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
+                    ai->GetAiObjectContext()->GetValue<LootObjectStack*>("available loot")->Get()->Add(killed->GetGUID());
+            }
             auto it = materialStates.find(player->GetGUID());
             if (it == materialStates.end() || !it->second.active)
                 return;
@@ -2960,6 +3080,7 @@ namespace Sbrpg
         RequestActivityReturn(state.session, getMSTime(), "stopped by user");
         state.currentSpawn = 0;
         state.pendingGatherNode = ObjectGuid::Empty;
+        state.pendingGatherSinceMs = 0;
         state.activeGatherNode = ObjectGuid::Empty;
         state.step = Sbrpg::RouteStep();
         state.stepIssued = false;
