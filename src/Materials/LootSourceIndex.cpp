@@ -99,12 +99,15 @@ namespace Sbrpg::Materials
             existing->maxCount = std::max(existing->maxCount, source.maxCount);
             existing->questRequired = existing->questRequired && source.questRequired;
             existing->fromReference = existing->fromReference || source.fromReference;
+            if (existing->requiredSkill == SKILL_NONE)
+                existing->requiredSkill = source.requiredSkill;
         }
 
         void ResolveTemplate(IndexData& data, LootRows const& rows, uint32_t templateId,
             uint32_t creatureEntry, AcquisitionMethod method, uint32_t rootTemplateId,
             float parentChance, uint32_t minMultiplier, uint32_t maxMultiplier,
-            bool fromReference, std::unordered_set<uint32_t>& activeReferences, uint8_t depth)
+            SkillType requiredSkill, bool fromReference,
+            std::unordered_set<uint32_t>& activeReferences, uint8_t depth)
         {
             if (depth > 16 || activeReferences.contains(templateId))
                 return;
@@ -128,7 +131,7 @@ namespace Sbrpg::Materials
                 {
                     ResolveTemplate(data, rows, static_cast<uint32_t>(std::abs(row.reference)),
                         creatureEntry, method, rootTemplateId, chance, minCount, maxCount,
-                        true, activeReferences, depth + 1);
+                        requiredSkill, true, activeReferences, depth + 1);
                     continue;
                 }
 
@@ -137,7 +140,7 @@ namespace Sbrpg::Materials
 
                 AddSource(data, row.itemId, LootSource{
                     creatureEntry, method, rootTemplateId, chance, minCount, maxCount,
-                    row.lootMode, row.groupId, row.questRequired, fromReference});
+                    row.lootMode, row.groupId, row.questRequired, fromReference, requiredSkill});
             }
             activeReferences.erase(templateId);
         }
@@ -172,14 +175,24 @@ namespace Sbrpg::Materials
                     std::unordered_set<uint32_t> activeReferences;
                     ResolveTemplate(data, corpseRows, ids.corpseLootId, ids.creatureEntry,
                         AcquisitionMethod::CreatureLoot, ids.corpseLootId, 100.0f, 1, 1,
-                        false, activeReferences, 0);
+                        SKILL_NONE, false, activeReferences, 0);
                 }
                 if (ids.skinLootId != 0)
                 {
+                    CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(ids.creatureEntry);
+                    SkillType const requiredSkill = creature ? creature->GetRequiredLootSkill() : SKILL_SKINNING;
+                    AcquisitionMethod method = AcquisitionMethod::Skinning;
+                    switch (requiredSkill)
+                    {
+                        case SKILL_HERBALISM: method = AcquisitionMethod::HerbalismCorpse; break;
+                        case SKILL_MINING: method = AcquisitionMethod::MiningCorpse; break;
+                        case SKILL_ENGINEERING: method = AcquisitionMethod::EngineeringCorpse; break;
+                        default: break;
+                    }
                     std::unordered_set<uint32_t> activeReferences;
                     ResolveTemplate(data, skinRows, ids.skinLootId, ids.creatureEntry,
-                        AcquisitionMethod::Skinning, ids.skinLootId, 100.0f, 1, 1,
-                        false, activeReferences, 0);
+                        method, ids.skinLootId, 100.0f, 1, 1,
+                        requiredSkill, false, activeReferences, 0);
                 }
             } while (creatures->NextRow());
 
@@ -235,6 +248,8 @@ namespace Sbrpg::Materials
                 output << ", ref";
             if (source.questRequired)
                 output << ", quest";
+            if (source.requiredSkill != SKILL_NONE)
+                output << ", skill " << static_cast<uint32_t>(source.requiredSkill);
             output << "]";
         }
         return output.str();

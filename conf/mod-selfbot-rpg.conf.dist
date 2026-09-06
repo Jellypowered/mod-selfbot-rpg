@@ -26,3 +26,18 @@ SelfBotRpg.StayInCurrentZone = 1
 SelfBotRpg.GatherSettleDelayMs = 1000
 # Minimum delay between SBRPG-owned action decisions. Stock playerbot action timing is unchanged.
 SelfBotRpg.ActionDelayMs = 1000
+# Comma-separated fishing bobber gameobject entries used by material Fishing runs.
+SelfBotRpg.FishingBobberEntries = 35591
+
+# Apply lures automatically when fishing, when a usable lure is available.
+SelfBotRpg.UseLures = 1
+
+# Fishing routing defaults: open water is safest; pool prioritization is opt-in.
+SelfBotRpg.FishingPrioritizePools = 0
+SelfBotRpg.FishingOpenWaterOnly = 1
+
+# Maximum bounded distance used to search for reachable fishing water.
+SelfBotRpg.FishingSearchDistance = 500.0
+
+# Preferred maximum distance from the water edge when selecting a cast point.
+SelfBotRpg.FishingCastDistance = 12.0

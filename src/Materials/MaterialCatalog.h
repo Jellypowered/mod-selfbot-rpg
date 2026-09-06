@@ -13,6 +13,10 @@ namespace Sbrpg::Materials
         Leather,
         Cooking,
         Elemental,
+        Blacksmithing,
+        Alchemy,
+        Engineering,
+        Fishing,
         Other
     };
 

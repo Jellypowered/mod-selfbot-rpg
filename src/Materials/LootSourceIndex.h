@@ -2,6 +2,7 @@
 #define SELFBOTRPG_LOOT_SOURCE_INDEX_H
 
 #include "Materials/MaterialCatalog.h"
+#include "SharedDefines.h"
 
 #include <cstdint>
 #include <string>
@@ -21,6 +22,7 @@ namespace Sbrpg::Materials
         uint8_t groupId = 0;
         bool questRequired = false;
         bool fromReference = false;
+        SkillType requiredSkill = SKILL_NONE;
     };
 
     class LootSourceIndex

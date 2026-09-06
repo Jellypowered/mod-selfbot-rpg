@@ -40,12 +40,15 @@
 #include "Map.h"
 #include "Movement/Spline/MoveSplineInitArgs.h"
 #include "MovementActions.h"
+#include "FishingAction.h"
 #include "NamedObjectContext.h"
+#include "UseItemAction.h"
 #include "NearestGameObjects.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotMgr.h"
 #include "Playerbots.h"
 #include "PathGenerator.h"
 #include "ScriptMgr.h"
@@ -61,15 +64,272 @@
 #include <limits>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 using namespace Acore::ChatCommands;
+
+// Stock playerbot helper; kept as a module-local declaration so no global
+// playerbot behavior or public header needs to change.
+WorldPosition FindLandFromPosition(PlayerbotAI* botAI, float startDistance, float endDistance,
+    float increment, float orientation, WorldPosition targetPos, float fishingSearchWindow, bool checkLOS);
 
 namespace
 {
     std::unordered_map<ObjectGuid, Sbrpg::FarmState> states;
     std::unordered_map<ObjectGuid, Sbrpg::Materials::MaterialFarmState> materialStates;
+    std::unordered_set<ObjectGuid> pendingSelfBotDisable;
     uint64_t nextRunId = 0;
+
+    std::string FormatDuration(uint64 seconds)
+    {
+        uint64 const hours = seconds / 3600;
+        uint64 const minutes = (seconds % 3600) / 60;
+        uint64 const remainder = seconds % 60;
+        if (hours != 0)
+            return Acore::StringFormat("{}h {}m {}s", hours, minutes, remainder);
+        if (minutes != 0)
+            return Acore::StringFormat("{}m {}s", minutes, remainder);
+        return Acore::StringFormat("{}s", remainder);
+    }
+
+    std::string FormatDurationMs(uint64 milliseconds)
+    {
+        return FormatDuration(milliseconds / 1000);
+    }
+
+    bool EnsureSelfBot(Player* player, bool& enabledBySbrpg)
+    {
+        if (!player)
+            return false;
+        if (IsSelfBot(player))
+        {
+            pendingSelfBotDisable.erase(player->GetGUID());
+            return true;
+        }
+        PlayerbotMgr* manager = GET_PLAYERBOT_MGR(player);
+        if (!manager)
+            return false;
+        manager->HandlePlayerbotCommand("self", player);
+        enabledBySbrpg = IsSelfBot(player);
+        return enabledBySbrpg;
+    }
+
+    void DisableOwnedSelfBot(Player* player, bool enabledBySbrpg)
+    {
+        if (!player || !enabledBySbrpg || !IsSelfBot(player))
+            return;
+        // Do not delete PlayerbotAI from inside an action/update callback. The
+        // next player update performs the toggle after the current AI stack has
+        // unwound, avoiding invalid ActionNode continuers/vtables.
+        pendingSelfBotDisable.insert(player->GetGUID());
+    }
+
+    struct RuntimeSettings
+    {
+        bool enable = true;
+        bool debug = false;
+        float materialMinimumChance = 1.0f;
+        uint32 materialReservedBagPercent = 0;
+        uint32 attemptsBeforeBlacklist = 3;
+        uint32 failedNodeBlacklistSeconds = 120;
+        uint32 emptyNodeBlacklistSeconds = 120;
+        bool stayInCurrentZone = true;
+        uint32 gatherSettleDelayMs = 1000;
+        uint32 actionDelayMs = 1000;
+        std::string fishingBobberEntries = "35591";
+        bool useLures = true;
+        bool fishingPrioritizePools = false;
+        bool fishingOpenWaterOnly = true;
+        float fishingSearchDistance = 500.0f;
+        float fishingCastDistance = 12.0f;
+    };
+
+    RuntimeSettings runtimeSettings;
+    bool runtimeSettingsLoaded = false;
+
+    void LoadRuntimeSettings()
+    {
+        runtimeSettings.enable = sConfigMgr->GetOption<bool>("SelfBotRpg.Enable", true);
+        runtimeSettings.debug = sConfigMgr->GetOption<bool>("SelfBotRpg.Debug", false);
+        runtimeSettings.materialMinimumChance = sConfigMgr->GetOption<float>("SelfBotRpg.MaterialMinimumChance", 1.0f);
+        runtimeSettings.materialReservedBagPercent = sConfigMgr->GetOption<uint32>("SelfBotRpg.MaterialReservedBagPercent", 0);
+        runtimeSettings.attemptsBeforeBlacklist = sConfigMgr->GetOption<uint32>("SelfBotRpg.AttemptsBeforeBlacklist", 3);
+        runtimeSettings.failedNodeBlacklistSeconds = sConfigMgr->GetOption<uint32>("SelfBotRpg.FailedNodeBlacklistSeconds", 120);
+        runtimeSettings.emptyNodeBlacklistSeconds = sConfigMgr->GetOption<uint32>("SelfBotRpg.EmptyNodeBlacklistSeconds", 120);
+        runtimeSettings.stayInCurrentZone = sConfigMgr->GetOption<bool>("SelfBotRpg.StayInCurrentZone", true);
+        runtimeSettings.gatherSettleDelayMs = sConfigMgr->GetOption<uint32>("SelfBotRpg.GatherSettleDelayMs", 1000);
+        runtimeSettings.actionDelayMs = sConfigMgr->GetOption<uint32>("SelfBotRpg.ActionDelayMs", 1000);
+        runtimeSettings.fishingBobberEntries = sConfigMgr->GetOption<std::string>("SelfBotRpg.FishingBobberEntries", "35591");
+        runtimeSettings.useLures = sConfigMgr->GetOption<bool>("SelfBotRpg.UseLures", true);
+        runtimeSettings.fishingPrioritizePools = sConfigMgr->GetOption<bool>("SelfBotRpg.FishingPrioritizePools", false);
+        runtimeSettings.fishingOpenWaterOnly = sConfigMgr->GetOption<bool>("SelfBotRpg.FishingOpenWaterOnly", true);
+        runtimeSettings.fishingSearchDistance = sConfigMgr->GetOption<float>("SelfBotRpg.FishingSearchDistance", 500.0f);
+        runtimeSettings.fishingCastDistance = sConfigMgr->GetOption<float>("SelfBotRpg.FishingCastDistance", 12.0f);
+        runtimeSettingsLoaded = true;
+    }
+
+    bool RuntimeEnabled() { return !runtimeSettingsLoaded || runtimeSettings.enable; }
+
+    bool SetRuntimeConfig(std::string const& key, std::string const& value, std::string* error)
+    {
+        try
+        {
+            if (key == "enable") runtimeSettings.enable = std::stoul(value) != 0;
+            else if (key == "debug") runtimeSettings.debug = std::stoul(value) != 0;
+            else if (key == "minchance")
+            {
+                float v = std::stof(value); if (v < 0.0f || v > 100.0f) throw std::out_of_range("range");
+                runtimeSettings.materialMinimumChance = v;
+            }
+            else if (key == "bagreserve")
+            {
+                uint32 v = std::stoul(value); if (v > 100) throw std::out_of_range("range");
+                runtimeSettings.materialReservedBagPercent = v;
+            }
+            else if (key == "attempts")
+            {
+                uint32 v = std::stoul(value); if (v < 1 || v > 10) throw std::out_of_range("range");
+                runtimeSettings.attemptsBeforeBlacklist = v;
+            }
+            else if (key == "failedblacklist")
+            {
+                uint32 v = std::stoul(value); if (v > 3600) throw std::out_of_range("range");
+                runtimeSettings.failedNodeBlacklistSeconds = v;
+            }
+            else if (key == "emptyblacklist")
+            {
+                uint32 v = std::stoul(value); if (v > 3600) throw std::out_of_range("range");
+                runtimeSettings.emptyNodeBlacklistSeconds = v;
+            }
+            else if (key == "zone") runtimeSettings.stayInCurrentZone = std::stoul(value) != 0;
+            else if (key == "settledelay")
+            {
+                uint32 v = std::stoul(value); if (v > 10000) throw std::out_of_range("range");
+                runtimeSettings.gatherSettleDelayMs = v;
+            }
+            else if (key == "actiondelay")
+            {
+                uint32 v = std::stoul(value); if (v < 100 || v > 10000) throw std::out_of_range("range");
+                runtimeSettings.actionDelayMs = v;
+            }
+            else if (key == "bobbers")
+            {
+                if (value.empty()) throw std::invalid_argument("empty");
+                runtimeSettings.fishingBobberEntries = value;
+            }
+            else if (key == "uselures") runtimeSettings.useLures = std::stoul(value) != 0;
+            else if (key == "prioritizepools") runtimeSettings.fishingPrioritizePools = std::stoul(value) != 0;
+            else if (key == "openwateronly") runtimeSettings.fishingOpenWaterOnly = std::stoul(value) != 0;
+            else if (key == "searchdistance")
+            {
+                float v = std::stof(value); if (v < 60.0f || v > 2000.0f) throw std::out_of_range("range");
+                runtimeSettings.fishingSearchDistance = v;
+            }
+            else if (key == "castdistance")
+            {
+                float v = std::stof(value); if (v < 5.0f || v > 25.0f) throw std::out_of_range("range");
+                runtimeSettings.fishingCastDistance = v;
+            }
+            else { if (error) *error = "unknown runtime setting"; return false; }
+            runtimeSettingsLoaded = true;
+            return true;
+        }
+        catch (...)
+        {
+            if (error) *error = "invalid value or out of range";
+            return false;
+        }
+    }
+
+    std::vector<uint32> ResolveNodeEntriesForItem(uint32 itemId)
+    {
+        std::vector<uint32> entries;
+        QueryResult rows = WorldDatabase.Query(
+            "SELECT DISTINCT gt.entry FROM gameobject_template gt "
+            "JOIN gameobject_loot_template gl ON gl.Entry = gt.Data1 "
+            "WHERE gt.type IN (3, 25) AND gl.Item = {}", itemId);
+        if (!rows)
+            return entries;
+        do
+        {
+            uint32 entry = rows->Fetch()[0].Get<uint32>();
+            if (std::find(entries.begin(), entries.end(), entry) == entries.end())
+                entries.push_back(entry);
+        } while (rows->NextRow());
+        return entries;
+    }
+
+    std::vector<uint32> ResolveFishingPoolEntriesForItem(uint32 itemId)
+    {
+        std::vector<uint32> entries;
+        QueryResult rows = WorldDatabase.Query(
+            "SELECT DISTINCT gt.entry FROM gameobject_template gt "
+            "JOIN fishing_loot_template fl ON fl.Entry = gt.Data1 "
+            "WHERE gt.type = 25 AND fl.Item = {}", itemId);
+        if (!rows)
+            return entries;
+        do
+        {
+            uint32 entry = rows->Fetch()[0].Get<uint32>();
+            if (std::find(entries.begin(), entries.end(), entry) == entries.end())
+                entries.push_back(entry);
+        } while (rows->NextRow());
+        return entries;
+    }
+
+    std::vector<uint32> ResolveFishingPoolEntriesForZone(Player* player)
+    {
+        std::vector<uint32> entries;
+        if (!player)
+            return entries;
+        QueryResult rows = WorldDatabase.Query(
+            "SELECT DISTINCT gt.entry FROM gameobject_template gt "
+            "JOIN fishing_loot_template fl ON fl.Entry = gt.Data1 "
+            "WHERE gt.type = 25");
+        if (!rows)
+            return entries;
+        do { entries.push_back(rows->Fetch()[0].Get<uint32>()); } while (rows->NextRow());
+        return entries;
+    }
+
+    std::vector<Sbrpg::Materials::FishingPoolPoint> LoadFishingPools(Player* player,
+        std::vector<uint32> const& entries)
+    {
+        std::vector<Sbrpg::Materials::FishingPoolPoint> pools;
+        if (!player || entries.empty())
+            return pools;
+        std::ostringstream ids;
+        for (std::size_t i = 0; i < entries.size(); ++i)
+        {
+            if (i) ids << ',';
+            ids << entries[i];
+        }
+        QueryResult rows = WorldDatabase.Query(
+            "SELECT guid, id, position_x, position_y, position_z FROM gameobject "
+            "WHERE map = {} AND id IN ({})", player->GetMapId(), ids.str());
+        if (!rows)
+            return pools;
+        do
+        {
+            Field* fields = rows->Fetch();
+            float x = fields[2].Get<float>(), y = fields[3].Get<float>(), z = fields[4].Get<float>();
+            if (player->GetMap()->GetZoneId(player->GetPhaseMask(), x, y, z) == player->GetZoneId())
+                pools.push_back({fields[0].Get<uint32>(), fields[1].Get<uint32>(), x, y, z, false});
+        } while (rows->NextRow());
+        return pools;
+    }
+
+    bool IsMiningMaterial(uint32 itemId)
+    {
+        switch (itemId)
+        {
+            case 2835: case 2770: case 2771: case 2772: case 3858: case 7911:
+            case 10620: case 23424: case 23425: case 36909: case 36912: case 36910:
+                return true;
+            default: return false;
+        }
+    }
 
     bool HasEntry(Sbrpg::FarmState const& state, uint32 entry)
     {
@@ -188,7 +448,7 @@ namespace
 
     void Debug(Player* bot, std::string const& message)
     {
-        if (!sConfigMgr->GetOption<bool>("SelfBotRpg.Debug", false))
+        if (!runtimeSettings.debug)
             return;
         LOG_DEBUG("module", "[SBRPG] {}: {}", bot->GetName(), message);
         if (WorldSession* session = bot->GetSession())
@@ -260,6 +520,35 @@ namespace
         Debug(player, "material stop requested; returning to session start");
     }
 
+    Item* FindEquippedFishingPole(Player* player);
+
+    void RestoreFishingEquipment(Player* player, Sbrpg::Materials::MaterialFarmState const& state)
+    {
+        if (!player || !state.fishingPoleEquipped)
+            return;
+        if (!state.fishingPreviousMainHand.IsEmpty())
+            if (Item* item = player->GetItemByGuid(state.fishingPreviousMainHand))
+                player->SwapItem(item->GetPos(), (INVENTORY_SLOT_BAG_0 << 8) | EQUIPMENT_SLOT_MAINHAND);
+        if (!state.fishingPreviousOffHand.IsEmpty())
+            if (Item* item = player->GetItemByGuid(state.fishingPreviousOffHand))
+                player->SwapItem(item->GetPos(), (INVENTORY_SLOT_BAG_0 << 8) | EQUIPMENT_SLOT_OFFHAND);
+
+        // EquipFishingPoleAction uses the normal inventory/equipment swap
+        // path. Mirror that path on return; do not RemoveItem/StoreItem an
+        // equipped object, which can duplicate or orphan the pole.
+        Item* pole = FindEquippedFishingPole(player);
+        if (!pole)
+            return;
+        ItemPosCountVec destination;
+        if (player->CanStoreItem(NULL_BAG, NULL_SLOT, destination, pole, false) != EQUIP_ERR_OK || destination.empty())
+        {
+            if (WorldSession* session = player->GetSession())
+                ChatHandler(session).PSendSysMessage("[SBRPG] Could not return the fishing pole to inventory: no free inventory space.");
+            return;
+        }
+        player->SwapItem(pole->GetPos(), destination.front().pos);
+    }
+
     void StopMaterial(Player* player, std::string reason = "stopped")
     {
         if (!player)
@@ -271,10 +560,11 @@ namespace
         {
             uint32 const elapsed = std::max(1u, getMSTime() - it->second.session.startedMs);
             ChatHandler(session).PSendSysMessage(
-                "[SBRPG] Material summary: {} ms, {} kills, {} requested items, {} loot events, {} corpse timeouts ({}).",
-                elapsed, it->second.kills, it->second.gatheredItems, it->second.lootEvents,
+                "[SBRPG] Material summary: {}, {} kills, {} requested items, {} loot events, {} corpse timeouts ({}).",
+                FormatDurationMs(elapsed), it->second.kills, it->second.gatheredItems, it->second.lootEvents,
                 it->second.corpseTimeouts, reason);
         }
+        RestoreFishingEquipment(player, it->second);
         if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
         {
             if (it->second.lootStrategyOverridden)
@@ -290,61 +580,292 @@ namespace
             it->second.grindStrategy.Release(ai);
             it->second.rpgStrategy.Release(ai);
         }
+        bool const disableSelfBot = it->second.selfBotEnabledBySbrpg;
         materialStates.erase(it);
+        DisableOwnedSelfBot(player, disableSelfBot);
     }
 
-    bool HasSkinningTool(Player* player)
+    bool HasHarvestTool(Player* player, SkillType skill)
     {
-        return player && (player->HasItemCount(7005, 1) || player->HasItemCount(40772, 1) ||
-            player->HasItemCount(40893, 1) || player->HasItemCount(12709, 1) ||
-            player->HasItemCount(19901, 1));
+        if (!player)
+            return false;
+        switch (skill)
+        {
+            case SKILL_MINING:
+                return player->HasItemCount(756, 1) || player->HasItemCount(778, 1) ||
+                    player->HasItemCount(1819, 1) || player->HasItemCount(1893, 1) ||
+                    player->HasItemCount(1959, 1) || player->HasItemCount(2901, 1) ||
+                    player->HasItemCount(9465, 1) || player->HasItemCount(20723, 1) ||
+                    player->HasItemCount(40772, 1) || player->HasItemCount(40892, 1) ||
+                    player->HasItemCount(40893, 1);
+            case SKILL_SKINNING:
+                return player->HasItemCount(7005, 1) || player->HasItemCount(40772, 1) ||
+                    player->HasItemCount(40893, 1) || player->HasItemCount(12709, 1) ||
+                    player->HasItemCount(19901, 1);
+            case SKILL_HERBALISM:
+            case SKILL_ENGINEERING:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool IsCorpseHarvestSkill(SkillType skill)
+    {
+        return skill == SKILL_SKINNING || skill == SKILL_HERBALISM ||
+            skill == SKILL_MINING || skill == SKILL_ENGINEERING;
+    }
+
+    bool IsCatalogFishingItem(uint32 itemId)
+    {
+        auto const* material = Sbrpg::Materials::Find(itemId);
+        return material && std::find(material->methods.begin(), material->methods.end(),
+            Sbrpg::Materials::AcquisitionMethod::Fishing) != material->methods.end();
+    }
+
+    uint32 FishingInventoryCount(Player* player)
+    {
+        if (!player)
+            return 0;
+        uint32 total = 0;
+        for (auto const& material : Sbrpg::Materials::Catalog())
+            if (IsCatalogFishingItem(material.itemId))
+                total += player->GetItemCount(material.itemId, true);
+        return total;
+    }
+
+    bool HasFishingPole(Player* player)
+    {
+        return player && (player->HasItemCount(6256, 1) || player->HasItemCount(6365, 1) ||
+            player->HasItemCount(6366, 1) || player->HasItemCount(6367, 1) ||
+            player->HasItemCount(6368, 1) || player->HasItemCount(19022, 1) ||
+            player->HasItemCount(19970, 1) || player->HasItemCount(44050, 1));
+    }
+
+    Item* FindEquippedFishingPole(Player* player)
+    {
+        if (!player)
+            return nullptr;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!item)
+                continue;
+            switch (item->GetEntry())
+            {
+                case 6256: case 6365: case 6366: case 6367: case 6368:
+                case 19022: case 19970: case 44050:
+                    return item;
+                default: break;
+            }
+        }
+        return nullptr;
+    }
+
+    Item* FindFishingLure(Player* player)
+    {
+        if (!player)
+            return nullptr;
+        // Prefer the strongest/current-expansion lure, then fall back to the
+        // classic lures. No lure is mandatory for fishing.
+        static uint32 const lureIds[] = { 46006, 34861, 6811, 6533, 6532, 6531, 6530, 6529 };
+        for (uint32 lureId : lureIds)
+            if (Item* lure = player->GetItemByEntry(lureId))
+                return lure;
+        return nullptr;
+    }
+
+    class SbrpgLureUseAction : public UseItemAction
+    {
+    public:
+        explicit SbrpgLureUseAction(PlayerbotAI* ai) : UseItemAction(ai, "sbrpg fishing lure") { }
+        bool Apply(Item* lure, Item* pole) { return lure && pole && UseItemOnItem(lure, pole); }
+    };
+
+    bool StartFishingMaterial(Player* player, uint32 itemId, uint32 durationMinutes,
+        uint32 quantityGoal, std::string* error, bool byZone = false,
+        bool prioritizePools = false, bool openWaterOnly = true)
+    {
+        if (!RuntimeEnabled())
+        { if (error) *error = "SBRPG is disabled by SelfBotRpg.Enable."; return false; }
+        if (!player)
+        { if (error) *error = "Player is unavailable."; return false; }
+        if (Sbrpg::IsActive(player))
+        { if (error) *error = "Stop the active node-farming session first."; return false; }
+        auto existingMaterial = materialStates.find(player->GetGUID());
+        if (existingMaterial != materialStates.end() && existingMaterial->second.active)
+        { if (error) *error = "Stop the active material session first."; return false; }
+        bool enabledBySbrpg = false;
+        if (!EnsureSelfBot(player, enabledBySbrpg))
+        { if (error) *error = "Unable to enable self-bot mode."; return false; }
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
+        if (!ai->HasSkill(SKILL_FISHING))
+        { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "This material requires the Fishing skill."; return false; }
+        if (!HasFishingPole(player))
+        { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "Fishing requires a fishing pole in the inventory."; return false; }
+
+        Sbrpg::Materials::MaterialFarmState& state = materialStates[player->GetGUID()];
+        state = Sbrpg::Materials::MaterialFarmState();
+        state.active = true;
+        state.selfBotEnabledBySbrpg = enabledBySbrpg;
+        state.fishing = true;
+        state.fishingByZone = byZone;
+        state.fishingPrioritizePools = prioritizePools;
+        state.fishingOpenWaterOnly = openWaterOnly;
+        state.itemId = itemId;
+        state.quantityGoal = quantityGoal;
+        state.inventoryStart = byZone ? FishingInventoryCount(player) : player->GetItemCount(itemId, true);
+        state.inventoryCount = state.inventoryStart;
+        state.mapId = player->GetMapId();
+        state.zoneId = player->GetZoneId();
+        state.phase = "fishing";
+        std::vector<uint32> poolEntries = byZone ? ResolveFishingPoolEntriesForZone(player) : ResolveFishingPoolEntriesForItem(itemId);
+        if (state.fishingOpenWaterOnly || !state.fishingPrioritizePools)
+            poolEntries.clear();
+        state.fishingPools = LoadFishingPools(player, poolEntries);
+        state.fishingPoolMode = state.fishingPrioritizePools && !state.fishingOpenWaterOnly && !state.fishingPools.empty();
+        Item* mainHand = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+        Item* offHand = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
+        if (!mainHand || !FindEquippedFishingPole(player))
+        {
+            state.fishingPreviousMainHand = mainHand ? mainHand->GetGUID() : ObjectGuid::Empty;
+            state.fishingPreviousOffHand = offHand ? offHand->GetGUID() : ObjectGuid::Empty;
+            EquipFishingPoleAction equipAction(ai);
+            if (equipAction.isUseful() && equipAction.Execute(Event("sbrpg fishing equip")))
+                state.fishingPoleEquipped = true;
+        }
+        Sbrpg::BeginActivitySession(state.session, player, durationMinutes, getMSTime());
+        state.previousLootStrategy = ai->GetAiObjectContext()->GetValue<LootStrategy*>("loot strategy")->Get()->GetName();
+        state.lootStrategy.SetStrategy("loot");
+        // Ensure stock loot exists even when selfbot was just enabled; the
+        // lease records whether SBRPG added it so it can be restored on stop.
+        state.lootStrategy.Acquire(ai);
+        state.lootStrategy.Suspend(ai);
+        ai->GetAiObjectContext()->GetValue<LootStrategy*>("loot strategy")->Set(
+            LootStrategyValue::instance("all"));
+        state.lootStrategyOverridden = true;
+        state.materialLootStrategy.SetStrategy("sbrpg material loot");
+        state.materialLootStrategy.Acquire(ai);
+        state.materialStrategy.SetStrategy("sbrpg material");
+        state.materialStrategy.Acquire(ai);
+        return true;
     }
 
     bool StartMaterial(Player* player, std::string materialName, uint32 durationMinutes,
                        uint32 quantityGoal, std::string* error)
     {
-        if (!player || !GET_PLAYERBOT_AI(player) || !IsSelfBot(player))
-        { if (error) *error = "Enable self-bot mode first (.playerbots bot self)."; return false; }
+        // Material starts use the same module-owned selfbot lease as node
+        // farming. Refuse overlap so Stop can always release exactly what this
+        // run acquired and return to its own captured start position.
+        if (!player)
+        {
+            if (error)
+                *error = "Player is unavailable.";
+            return false;
+        }
         if (Sbrpg::IsActive(player))
-        { if (error) *error = "Stop the node-farming run first."; return false; }
+        {
+            if (error)
+                *error = "Stop the active node-farming session before starting material farming.";
+            return false;
+        }
+        if (!RuntimeEnabled())
+        { if (error) *error = "SBRPG is disabled by SelfBotRpg.Enable."; return false; }
         if (materialStates.contains(player->GetGUID()))
-            StopMaterial(player);
+        {
+            if (error)
+                *error = "Stop the active material session before starting another one.";
+            return false;
+        }
 
         uint32 itemId = 0;
         Sbrpg::Materials::MaterialDefinition const* material = ResolveMaterial(std::move(materialName), itemId);
         if (!material)
         { if (error) *error = "Unknown material; use a catalog name (cloth or leather) or an exact item ID."; return false; }
 
-        float const minimumChance = sConfigMgr->GetOption<float>("SelfBotRpg.MaterialMinimumChance", 1.0f);
+        float const minimumChance = runtimeSettings.materialMinimumChance;
         auto supportsMethod = [material](Sbrpg::Materials::AcquisitionMethod method)
         {
             return std::find(material->methods.begin(), material->methods.end(), method) != material->methods.end();
         };
+        if (supportsMethod(Sbrpg::Materials::AcquisitionMethod::Fishing))
+            return StartFishingMaterial(player, itemId, durationMinutes, quantityGoal, error, false,
+                runtimeSettings.fishingPrioritizePools, runtimeSettings.fishingOpenWaterOnly);
+        if (supportsMethod(Sbrpg::Materials::AcquisitionMethod::GameObjectNode))
+        {
+            std::vector<uint32> nodeEntries = ResolveNodeEntriesForItem(itemId);
+            if (nodeEntries.empty())
+            { if (error) *error = "No database gathering nodes produce this material."; return false; }
+            Sbrpg::Profession profession = IsMiningMaterial(itemId) ?
+                Sbrpg::Profession::Mining : Sbrpg::Profession::Herbalism;
+            return Sbrpg::Start(player, profession, std::move(nodeEntries), durationMinutes,
+                error, itemId, quantityGoal);
+        }
+
+        bool enabledBySbrpg = false;
+        if (!EnsureSelfBot(player, enabledBySbrpg))
+        { if (error) *error = "Unable to enable self-bot mode."; return false; }
         PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
-        bool const needsSkinning = supportsMethod(Sbrpg::Materials::AcquisitionMethod::Skinning);
-        if (needsSkinning && !ai->HasSkill(SKILL_SKINNING))
-        { if (error) *error = "This material requires the Skinning skill."; return false; }
-        if (needsSkinning && !HasSkinningTool(player))
-        { if (error) *error = "This material requires a skinning knife or compatible tool."; return false; }
+        std::vector<SkillType> harvestSkills;
         std::vector<uint32> sourceEntries;
+        uint32 blockedHarvestSources = 0;
+        auto addHarvestSkill = [&harvestSkills](SkillType skill)
+        {
+            if (IsCorpseHarvestSkill(skill) &&
+                std::find(harvestSkills.begin(), harvestSkills.end(), skill) == harvestSkills.end())
+                harvestSkills.push_back(skill);
+        };
         for (Sbrpg::Materials::LootSource const& source : Sbrpg::Materials::LootSourceIndex::Find(itemId))
-            if (!source.questRequired && supportsMethod(source.method) &&
-                source.estimatedChance >= minimumChance &&
-                std::find(sourceEntries.begin(), sourceEntries.end(), source.creatureEntry) == sourceEntries.end())
+        {
+            if (source.questRequired || !supportsMethod(source.method) ||
+                source.estimatedChance < minimumChance)
+                continue;
+
+            if (source.requiredSkill != SKILL_NONE)
+            {
+                if (!IsCorpseHarvestSkill(source.requiredSkill) ||
+                    !ai->HasSkill(source.requiredSkill) ||
+                    !HasHarvestTool(player, source.requiredSkill))
+                {
+                    ++blockedHarvestSources;
+                    continue;
+                }
+                addHarvestSkill(source.requiredSkill);
+            }
+
+            if (std::find(sourceEntries.begin(), sourceEntries.end(), source.creatureEntry) == sourceEntries.end())
                 sourceEntries.push_back(source.creatureEntry);
+        }
         if (sourceEntries.empty())
-        { if (error) *error = Acore::StringFormat("No supported creature sources meet the {:.2f}% minimum chance.", minimumChance); return false; }
+        {
+            if (error)
+            {
+                if (blockedHarvestSources != 0)
+                    *error = "All qualifying sources require a missing profession, skill, or tool.";
+                else if (supportsMethod(Sbrpg::Materials::AcquisitionMethod::Transformation))
+                    *error = "This material is a crafted or transformation output, not a direct farm target.";
+                else if (supportsMethod(Sbrpg::Materials::AcquisitionMethod::Fishing))
+                    *error = "Fishing material runs require the module-owned fishing controller.";
+                else if (supportsMethod(Sbrpg::Materials::AcquisitionMethod::GameObjectNode))
+                    *error = "Use the node-farming controls for this gathering material until material-target node bridging is enabled.";
+                else
+                    *error = Acore::StringFormat("No supported creature sources meet the {:.2f}% minimum chance.", minimumChance);
+            }
+            DisableOwnedSelfBot(player, enabledBySbrpg);
+            return false;
+        }
 
         std::vector<Sbrpg::Materials::Hotspot> hotspots =
             Sbrpg::Materials::HotspotPlanner::Build(
                 Sbrpg::Materials::CreatureSpawnRepository::Load(player, sourceEntries));
         hotspots = Sbrpg::Materials::HotspotPlanner::Plan(player, std::move(hotspots));
         if (hotspots.empty())
-        { if (error) *error = "No reachable creature hotspots found in the current zone."; return false; }
+        { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "No reachable creature hotspots found in the current zone."; return false; }
 
         Sbrpg::Materials::MaterialFarmState& state = materialStates[player->GetGUID()];
         state = Sbrpg::Materials::MaterialFarmState();
         state.active = true;
+        state.selfBotEnabledBySbrpg = enabledBySbrpg;
         state.itemId = itemId;
         state.quantityGoal = quantityGoal;
         state.inventoryStart = player->GetItemCount(itemId, true);
@@ -353,17 +874,21 @@ namespace
         state.mapId = player->GetMapId();
         state.zoneId = player->GetZoneId();
         state.creatureEntries = std::move(sourceEntries);
-        state.needsSkinning = needsSkinning;
+        state.needsSkinning = std::find(harvestSkills.begin(), harvestSkills.end(), SKILL_SKINNING) != harvestSkills.end();
+        state.harvestSkills = std::move(harvestSkills);
         state.hotspots = std::move(hotspots);
-        state.lootStrategy.SetStrategy("loot");
-        state.lootStrategy.Suspend(ai);
         state.previousLootStrategy = ai->GetAiObjectContext()->GetValue<LootStrategy*>("loot strategy")->Get()->GetName();
+        state.lootStrategy.SetStrategy("loot");
+        // Ensure stock loot exists even when selfbot was just enabled; the
+        // lease records whether SBRPG added it so it can be restored on stop.
+        state.lootStrategy.Acquire(ai);
+        state.lootStrategy.Suspend(ai);
         ai->GetAiObjectContext()->GetValue<LootStrategy*>("loot strategy")->Set(
             LootStrategyValue::instance("all"));
         state.lootStrategyOverridden = true;
         state.materialLootStrategy.SetStrategy("sbrpg material loot");
         state.materialLootStrategy.Acquire(ai);
-        if (needsSkinning)
+        if (!state.harvestSkills.empty())
         {
             state.gatherStrategy.SetStrategy("gather");
             state.gatherStrategy.Acquire(ai);
@@ -377,12 +902,20 @@ namespace
         return true;
     }
 
+    void SendAddon(Player* player, ChatMsg chatType, std::string const& payload);
+
     void SetMaterialPhase(Player* player, Sbrpg::Materials::MaterialFarmState& state, std::string phase)
     {
         if (state.phase != phase)
         {
             state.phase = std::move(phase);
             Debug(player, Acore::StringFormat("material phase: {}", state.phase));
+            if (state.fishing)
+                SendAddon(player, CHAT_MSG_WHISPER, Sbrpg::Protocol::Build("MATERIAL_STATUS", {
+                    "0", state.active ? "1" : "0", std::to_string(state.itemId),
+                    std::to_string(state.gatheredItems), std::to_string(state.quantityGoal),
+                    std::to_string(state.kills), "0", "0", state.phase
+                }));
         }
     }
 
@@ -396,8 +929,7 @@ namespace
         PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
         if (!ai)
             return;
-        uint32 const reservedBagPercent = sConfigMgr->GetOption<uint32>(
-            "SelfBotRpg.MaterialReservedBagPercent", 0);
+        uint32 const reservedBagPercent = runtimeSettings.materialReservedBagPercent;
         uint8 const bagThreshold = static_cast<uint8>(100u - std::min(100u, reservedBagPercent));
         uint32 const now = getMSTime();
         bool const timedOut = Sbrpg::ActivityTimedOut(it->second.session, now);
@@ -453,12 +985,13 @@ namespace
             }
 
             uint32 const now = getMSTime();
-            uint32 const actionDelayMs = sConfigMgr->GetOption<uint32>(
-                "SelfBotRpg.ActionDelayMs", 1000);
+            uint32 const actionDelayMs = runtimeSettings.actionDelayMs;
             if (state.lastActionMs != 0 && now - state.lastActionMs < actionDelayMs)
                 return false;
             state.lastActionMs = now;
             UpdateMaterialReturn(bot);
+            if (state.fishing)
+                return HandleFishing(state, now);
             if (bot->IsInCombat())
             {
                 SetMaterialPhase(bot, state, state.session.returnRequested ?
@@ -485,12 +1018,13 @@ namespace
                 }
                 if (state.invalidLootSinceMs == 0)
                     state.invalidLootSinceMs = now;
-                if (now - state.invalidLootSinceMs < 5000 || !bot->GetLootGUID().IsEmpty())
+                if (bot->IsInCombat() || now - state.invalidLootSinceMs < 15000 ||
+                    !bot->GetLootGUID().IsEmpty())
                 {
                     SetMaterialPhase(bot, state, "waiting for stock loot target recovery");
                     return false;
                 }
-                Debug(bot, Acore::StringFormat("material releasing stale loot target: guid {}",
+                Debug(bot, Acore::StringFormat("material releasing stale loot target after 15s: guid {}",
                     activeLoot.guid.GetCounter()));
                 AI_VALUE(LootObjectStack*, "available loot")->Remove(activeLoot.guid);
                 context->GetValue<LootObject>("loot target")->Set(LootObject());
@@ -502,6 +1036,25 @@ namespace
                 return false;
             }
 
+            // Explicitly approach queued combat corpses/chests on return (and
+            // during normal routing) so stock loot can select them promptly.
+            if (AI_VALUE(bool, "has available loot"))
+            {
+                LootObject pendingLoot = AI_VALUE(LootObjectStack*, "available loot")->GetLoot();
+                WorldObject* pendingObject = pendingLoot.GetWorldObject(bot);
+                if (pendingObject && bot->GetDistance(pendingObject) > sPlayerbotAIConfig.lootDistance - 2.0f)
+                {
+                    SetMaterialPhase(bot, state, state.session.returnRequested ?
+                        "approaching loot before return" : "approaching nearby loot");
+                    if (!bot->isMoving() && !bot->IsNonMeleeSpellCast(true))
+                        travel.MoveNearLoot(pendingObject);
+                    return false;
+                }
+                SetMaterialPhase(bot, state, state.session.returnRequested ?
+                    "finishing nearby loot before return" : "yielding to nearby loot");
+                return false;
+            }
+
             if (!state.target.IsEmpty())
             {
                 Creature* corpse = botAI->GetCreature(state.target);
@@ -510,13 +1063,16 @@ namespace
                     bool const needsLoot = corpse->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE);
                     LootObject corpseLoot(bot, state.target);
                     // Normal corpse loot always has priority. Do not expose a
-                    // skinnable target to stock gather until the lootable flag
-                    // is gone, otherwise a ranged bot can skin/interrupt while
+                    // harvest target to stock gather until the lootable flag is
+                    // gone, otherwise a ranged bot can harvest/interrupt while
                     // regular corpse items remain.
-                    bool const skinningReady = !needsLoot && corpseLoot.skillId == SKILL_SKINNING &&
-                        HasSkinningTool(bot) && botAI->HasSkill(SKILL_SKINNING) &&
-                        bot->GetSkillValue(SKILL_SKINNING) >= corpseLoot.reqSkillValue;
-                    bool const corpseActionable = needsLoot || skinningReady;
+                    SkillType const corpseSkill = static_cast<SkillType>(corpseLoot.skillId);
+                    bool const harvestReady = !needsLoot &&
+                        std::find(state.harvestSkills.begin(), state.harvestSkills.end(), corpseSkill) !=
+                            state.harvestSkills.end() &&
+                        HasHarvestTool(bot, corpseSkill) && botAI->HasSkill(corpseSkill) &&
+                        bot->GetSkillValue(corpseSkill) >= corpseLoot.reqSkillValue;
+                    bool const corpseActionable = needsLoot || harvestReady;
                     if (corpseActionable)
                     {
                         if (state.corpseWaitSinceMs == 0)
@@ -653,6 +1209,250 @@ namespace
         }
 
     private:
+        bool HandleFishing(Sbrpg::Materials::MaterialFarmState& state, uint32 now)
+        {
+            if (state.session.returnRequested)
+            {
+                // Stop cancels future casts, but an active cast/bobber is a
+                // normal player action that must be allowed to finish before
+                // returning home.
+                if (bot->IsNonMeleeSpellCast(true))
+                {
+                    SetMaterialPhase(bot, state, "finishing fishing cast before return");
+                    return false;
+                }
+
+                std::stringstream configuredBobbers(runtimeSettings.fishingBobberEntries);
+                std::string bobberValue;
+                while (std::getline(configuredBobbers, bobberValue, ','))
+                {
+                    uint32 bobberEntry = 0;
+                    try { bobberEntry = static_cast<uint32>(std::stoul(bobberValue)); }
+                    catch (...) { continue; }
+                    std::list<GameObject*> bobbers;
+                    bot->GetGameObjectListWithEntryInGrid(bobbers, bobberEntry, 30.0f);
+                    for (GameObject* bobber : bobbers)
+                    {
+                        if (!bobber || bobber->GetOwnerGUID() != bot->GetGUID() ||
+                            bobber->GetGoType() != GAMEOBJECT_TYPE_FISHINGNODE)
+                            continue;
+                        if (bobber->getLootState() == GO_READY)
+                        {
+                            SetMaterialPhase(bot, state, "reeling fishing catch before return");
+                            bobber->Use(bot);
+                        }
+                        else
+                            SetMaterialPhase(bot, state, "waiting for fishing bite before return");
+                        return false;
+                    }
+                }
+
+                LootObject loot = AI_VALUE(LootObject, "loot target");
+                if (loot.IsEmpty() && bot->GetLootGUID().IsEmpty())
+                    return ReturnHome(state, now);
+                SetMaterialPhase(bot, state, "finishing fishing loot before return");
+                return false;
+            }
+            if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(true))
+                return false;
+
+
+            if (!state.fishingPoolMode && !state.fishingPools.empty() &&
+                now - state.fishingPoolLastScanMs >= 60000)
+            {
+                state.fishingPoolMode = true;
+                state.fishingPoolMisses = 0;
+                state.fishingPoolIndex = 0;
+            }
+            if (state.fishingPoolMode && !state.fishingPools.empty())
+            {
+                if (state.fishingPoolIndex >= state.fishingPools.size())
+                    state.fishingPoolIndex = 0;
+                auto& pool = state.fishingPools[state.fishingPoolIndex];
+                std::list<GameObject*> livePools;
+                bot->GetGameObjectListWithEntryInGrid(livePools, pool.entry, 20.0f);
+                bool poolPresent = false;
+                for (GameObject* object : livePools)
+                    if (object && object->isSpawned() &&
+                        bot->GetExactDist(object) <= 20.0f)
+                    { poolPresent = true; break; }
+                if (!poolPresent)
+                {
+                    ++state.fishingPoolMisses;
+                    state.fishingPoolIndex = (state.fishingPoolIndex + 1) % state.fishingPools.size();
+                    state.fishingPoolStep = Sbrpg::RouteStep();
+                    if (state.fishingPoolMisses >= state.fishingPools.size())
+                    {
+                        state.fishingPoolMode = false;
+                        state.fishingPoolLastScanMs = now;
+                        state.fishingPoolMisses = 0;
+                        SetMaterialPhase(bot, state, "no active fishing pools; open water fallback");
+                    }
+                    return false;
+                }
+                state.fishingPoolMisses = 0;
+                if (bot->GetExactDist(pool.x, pool.y, pool.z) > 10.0f)
+                {
+                    if ((bot->movespline && !bot->movespline->Finalized()) || bot->isMoving())
+                        return false;
+                    Sbrpg::RouteStep step;
+                    if (Sbrpg::BuildRouteStep(bot, pool.x, pool.y, pool.z, step) &&
+                        IssueBoundedMove(step))
+                    {
+                        state.fishingPoolStep = step;
+                        SetMaterialPhase(bot, state, "travelling to fishing pool");
+                    }
+                    else
+                    {
+                        state.fishingPoolIndex = (state.fishingPoolIndex + 1) % state.fishingPools.size();
+                    }
+                    return false;
+                }
+                SetMaterialPhase(bot, state, "fishing pool");
+            }
+
+            // The stock action searches only about 60 yards. SBRPG keeps the
+            // same normal-player land/water rules but expands the bounded
+            // search so fishing can reach water from a distant inland start.
+            bool customWaterSearch = false;
+            if (!state.fishingPoolMode && state.fishingLastWaterSearchMs == 0)
+            {
+                state.fishingLastWaterSearchMs = now;
+                // Clear any stale stock-playerbot fishing spot first. The
+                // configured cast distance must not be silently replaced by
+                // the stock action's wider default search.
+                SET_AI_VALUE(WorldPosition, "fishing spot", WorldPosition());
+                WorldPosition water = FindWaterRadial(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                    bot->GetMap(), bot->GetPhaseMask(), 10.0f, runtimeSettings.fishingSearchDistance, 10.0f, false);
+                if (water.IsValid())
+                {
+                    float const angle = bot->GetAngle(water.GetPositionX(), water.GetPositionY());
+                    WorldPosition land = FindLandFromPosition(botAI, 0.0f, runtimeSettings.fishingCastDistance,
+                        1.0f, angle, water, runtimeSettings.fishingSearchDistance, false);
+                    if (land.IsValid())
+                    {
+                        SET_AI_VALUE(WorldPosition, "fishing spot", land);
+                        state.fishingCustomWaterSpot = true;
+                    }
+                }
+                customWaterSearch = true;
+            }
+
+            // Open-water fishing must use the configured module-owned spot.
+            // Only use the stock search if the custom search was not needed
+            // (for example, a pool session or an already valid stock spot).
+            MoveNearWaterAction moveNearWater(botAI);
+            bool const waterSpotAvailable = customWaterSearch ?
+                AI_VALUE(WorldPosition, "fishing spot").IsValid() : moveNearWater.isPossible();
+            if (moveNearWater.isUseful())
+            {
+                SetMaterialPhase(bot, state, "moving to open water");
+                WorldPosition fishingSpot = AI_VALUE(WorldPosition, "fishing spot");
+                Sbrpg::RouteStep waterStep;
+                if (fishingSpot.IsValid() && Sbrpg::BuildRouteStep(bot,
+                    fishingSpot.GetPositionX(), fishingSpot.GetPositionY(), fishingSpot.GetPositionZ(), waterStep))
+                {
+                    if (Sbrpg::FollowRouteStep(bot, waterStep) || IssueBoundedMove(waterStep))
+                        return true;
+                    Debug(bot, Acore::StringFormat("water route built but movement was rejected ({:.1f}, {:.1f}, {:.1f})",
+                        fishingSpot.GetPositionX(), fishingSpot.GetPositionY(), fishingSpot.GetPositionZ()));
+                }
+                else if (!fishingSpot.IsValid())
+                {
+                    if (state.fishingWaterLastReportMs == 0 || now - state.fishingWaterLastReportMs >= 5000)
+                    {
+                        state.fishingWaterLastReportMs = now;
+                        ChatHandler(bot->GetSession()).PSendSysMessage(
+                            "[SBRPG] No reachable fishing water found from the current position; check VMAP/MMap data and fishing distance settings.");
+                    }
+                    SetMaterialPhase(bot, state, "water search failed");
+                    Sbrpg::RequestActivityReturn(state.session, now, "no reachable fishing water");
+                    return true;
+                }
+                // The stock action may still succeed when its cached spot is
+                // not mmap-routeable from this controller tick.
+                if (moveNearWater.Execute(Event("sbrpg move near water")))
+                    return true;
+                if (state.fishingWaterLastReportMs == 0 || now - state.fishingWaterLastReportMs >= 5000)
+                {
+                    state.fishingWaterLastReportMs = now;
+                    ChatHandler(bot->GetSession()).PSendSysMessage(
+                        "[SBRPG] Fishing water route could not be started; movement was rejected.");
+                }
+                return true;
+            }
+            if (!waterSpotAvailable && !AI_VALUE(WorldPosition, "fishing spot").IsValid())
+            {
+                SetMaterialPhase(bot, state, "no reachable water found");
+                Sbrpg::RequestActivityReturn(state.session, now, "no reachable water");
+                return true;
+            }
+
+            std::vector<uint32> bobberEntries;
+            std::string configured = runtimeSettings.fishingBobberEntries;
+            bool hasOwnedBobber = false;
+            std::stringstream entries(configured);
+            std::string value;
+            while (std::getline(entries, value, ','))
+            {
+                try { bobberEntries.push_back(static_cast<uint32>(std::stoul(value))); }
+                catch (...) { }
+            }
+            std::list<GameObject*> nearby;
+            for (uint32 entry : bobberEntries)
+                bot->GetGameObjectListWithEntryInGrid(nearby, entry, 30.0f);
+            for (GameObject* bobber : nearby)
+            {
+                if (bobber && bobber->GetOwnerGUID() == bot->GetGUID() &&
+                    bobber->GetGoType() == GAMEOBJECT_TYPE_FISHINGNODE)
+                {
+                    hasOwnedBobber = true;
+                    if (bobber->getLootState() == GO_READY)
+                    {
+                        SetMaterialPhase(bot, state, "reeling fishing catch");
+                        bobber->Use(bot);
+                        state.fishingLastCastMs = now;
+                        return true;
+                    }
+                }
+            }
+            if (hasOwnedBobber)
+            {
+                SetMaterialPhase(bot, state, "waiting for fishing bite");
+                return false;
+            }
+            if (state.fishingLastCastMs == 0 || now - state.fishingLastCastMs >= 5000)
+            {
+                // Check the lure immediately before every real cast. A lure
+                // action may take a tick; never mark fishing as failed when a
+                // lure is absent or unusable.
+                if (runtimeSettings.useLures)
+                {
+                    Item* pole = FindEquippedFishingPole(bot);
+                    if (pole && pole->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) == 0)
+                        if (Item* lure = FindFishingLure(bot))
+                        {
+                            SetMaterialPhase(bot, state, "applying optional fishing lure");
+                            SbrpgLureUseAction lureAction(botAI);
+                            if (lureAction.Apply(lure, pole))
+                                return true;
+                            if (state.fishingLureLastReportMs == 0 || now - state.fishingLureLastReportMs >= 10000)
+                            {
+                                state.fishingLureLastReportMs = now;
+                                ChatHandler(bot->GetSession()).PSendSysMessage(
+                                    "[SBRPG] Fishing lure found but could not be applied; continuing without lure.");
+                            }
+                        }
+                }
+                SetMaterialPhase(bot, state, "casting fishing line");
+                bot->CastSpell(bot, 18248, true);
+                state.fishingLastCastMs = now;
+                return true;
+            }
+            SetMaterialPhase(bot, state, "waiting for fishing bobber");
+            return false;
+        }
+
         bool IsRecovering() const
         {
             if (bot->IsNonMeleeSpellCast(true))
@@ -840,8 +1640,7 @@ namespace
                 return false;
             Sbrpg::FarmState& mutableState = states[bot->GetGUID()];
             uint32 const actionNow = getMSTime();
-            uint32 const actionDelayMs = sConfigMgr->GetOption<uint32>(
-                "SelfBotRpg.ActionDelayMs", 1000);
+            uint32 const actionDelayMs = runtimeSettings.actionDelayMs;
             if (mutableState.lastActionMs != 0 && actionNow - mutableState.lastActionMs < actionDelayMs)
                 return false;
             mutableState.lastActionMs = actionNow;
@@ -895,10 +1694,45 @@ namespace
             // replace the target: playerbots must finish/release the complete
             // loot window using its normal lifecycle.
             LootObject stockLootTarget = AI_VALUE(LootObject, "loot target");
-            if ((!stockLootTarget.IsEmpty() && stockLootTarget.IsLootPossible(bot)) || !bot->GetLootGUID().IsEmpty())
+            if (!stockLootTarget.IsEmpty())
             {
+                if (mutableState.lootWaitSinceMs == 0)
+                    mutableState.lootWaitSinceMs = now;
+                if (stockLootTarget.IsLootPossible(bot) || !bot->GetLootGUID().IsEmpty() ||
+                    bot->IsInCombat() || now - mutableState.lootWaitSinceMs < 15000)
+                {
+                    SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
+                        mutableState.session.returnRequested ? "finishing active loot before return" : "stock playerbots owns active loot target");
+                    return false;
+                }
+                Debug(bot, Acore::StringFormat("releasing stale loot target after 15s: guid {}",
+                    stockLootTarget.guid.GetCounter()));
+                AI_VALUE(LootObjectStack*, "available loot")->Remove(stockLootTarget.guid);
+                botAI->GetAiObjectContext()->GetValue<LootObject>("loot target")->Set(LootObject());
+                mutableState.lootWaitSinceMs = 0;
+            }
+            else
+                mutableState.lootWaitSinceMs = 0;
+
+            // Available loot can be a nearby chest/gameobject or a combat
+            // corpse that has not yet become the selected loot target. Approach
+            // it with normal bounded playerbot movement before yielding to the
+            // stock strategy for opening and looting.
+            if (AI_VALUE(bool, "has available loot"))
+            {
+                LootObject pendingLoot = AI_VALUE(LootObjectStack*, "available loot")->GetLoot();
+                WorldObject* pendingObject = pendingLoot.GetWorldObject(bot);
+                if (pendingObject && bot->GetDistance(pendingObject) > sPlayerbotAIConfig.lootDistance - 2.0f)
+                {
+                    SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
+                        mutableState.session.returnRequested ? "approaching loot before return" : "approaching nearby loot");
+                    if (!bot->isMoving() && !bot->IsNonMeleeSpellCast(true))
+                        MoveNear(pendingObject, sPlayerbotAIConfig.contactDistance,
+                            MovementPriority::MOVEMENT_NORMAL);
+                    return false;
+                }
                 SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
-                    mutableState.session.returnRequested ? "finishing active loot before return" : "stock playerbots owns active loot target");
+                    mutableState.session.returnRequested ? "finishing nearby loot before return" : "yielding to nearby loot");
                 return false;
             }
 
@@ -996,10 +1830,13 @@ namespace
                     SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending, "waiting for stock gather claim");
                     return false;
                 }
-                mutableState.blacklistedUntilMs[go->GetSpawnId()] = now + 30000;
-                mutableState.pendingGatherNode = ObjectGuid::Empty;
-                SetPhase(mutableState, Sbrpg::FarmPhase::SelectingNode, "stock gather did not claim live node");
-                continue;
+                if (bot->GetDistance(go) > sPlayerbotAIConfig.contactDistance + 0.5f)
+                {
+                    SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending, "approaching live gathering node");
+                    MoveNear(go, sPlayerbotAIConfig.contactDistance,
+                        MovementPriority::MOVEMENT_NORMAL);
+                    return false;
+                }
                 if (mutableState.pendingGatherNode != go->GetGUID())
                 {
                     mutableState.pendingGatherNode = go->GetGUID();
@@ -1284,25 +2121,66 @@ namespace
 
         void OnPlayerUpdate(Player* player, uint32 /*diff*/) override
         {
+            if (player)
+            {
+                auto pending = pendingSelfBotDisable.find(player->GetGUID());
+                bool const hasActiveNode = Sbrpg::IsActive(player);
+                auto material = materialStates.find(player->GetGUID());
+                bool const hasActiveMaterial = material != materialStates.end() && material->second.active;
+                if (pending != pendingSelfBotDisable.end() && !hasActiveNode && !hasActiveMaterial)
+                {
+                    pendingSelfBotDisable.erase(pending);
+                    if (IsSelfBot(player))
+                        if (PlayerbotMgr* manager = GET_PLAYERBOT_MGR(player))
+                            manager->HandlePlayerbotCommand("self", player);
+                }
+            }
             auto materialIt = player ? materialStates.find(player->GetGUID()) : materialStates.end();
+            uint32 const now = getMSTime();
             if (materialIt != materialStates.end() && materialIt->second.active)
             {
-                uint32 const current = player->GetItemCount(materialIt->second.itemId, true);
+                uint32 const current = materialIt->second.fishingByZone ? FishingInventoryCount(player) :
+                    player->GetItemCount(materialIt->second.itemId, true);
                 if (current > materialIt->second.inventoryCount)
                 {
                     uint32 const gained = current - materialIt->second.inventoryCount;
                     materialIt->second.gatheredItems += gained;
-                    Debug(player, Acore::StringFormat("material inventory gain: {} (total {})",
+                    Debug(player, Acore::StringFormat("fishing inventory gain: {} cataloged fish (total {})",
                         gained, materialIt->second.gatheredItems));
+                    if (materialIt->second.quantityGoal != 0 &&
+                        materialIt->second.gatheredItems >= materialIt->second.quantityGoal)
+                        Sbrpg::RequestActivityReturn(materialIt->second.session, getMSTime(), "fish quantity goal reached");
                 }
                 materialIt->second.inventoryCount = current;
+                if (now - materialIt->second.lastAddonStatusMs >= 2000)
+                {
+                    materialIt->second.lastAddonStatusMs = now;
+                    SendAddon(player, CHAT_MSG_WHISPER, Sbrpg::Protocol::Build("MATERIAL_STATUS", {
+                        "0", "1", std::to_string(materialIt->second.itemId),
+                        std::to_string(materialIt->second.gatheredItems),
+                        std::to_string(materialIt->second.quantityGoal),
+                        std::to_string(materialIt->second.kills),
+                        std::to_string(Sbrpg::ActivityRemainingSeconds(materialIt->second.session, now)),
+                        materialIt->second.harvestSkills.empty() ? "0" : "1",
+                        materialIt->second.phase
+                    }));
+                }
             }
             UpdateMaterialReturn(player);
 
             auto it = player ? states.find(player->GetGUID()) : states.end();
             if (it == states.end() || !it->second.active)
                 return;
-            uint32 const now = getMSTime();
+            if (it->second.targetItemId != 0)
+            {
+                uint32 const current = player->GetItemCount(it->second.targetItemId, true);
+                if (current > it->second.inventoryCount)
+                    it->second.gatheredItems += current - it->second.inventoryCount;
+                it->second.inventoryCount = current;
+                if (it->second.quantityGoal != 0 &&
+                    it->second.gatheredItems >= it->second.quantityGoal)
+                    Sbrpg::RequestActivityReturn(it->second.session, getMSTime(), "quantity goal reached");
+            }
             if (it->second.revision != it->second.lastPublishedRevision ||
                 (it->second.session.durationMs != 0 && now - it->second.lastStatusPublishMs >= 5000))
                 PublishStatus(player);
@@ -1458,7 +2336,8 @@ namespace
             std::to_string(state.quantityGoal),
             std::to_string(state.kills),
             std::to_string(remaining),
-            state.needsSkinning ? "1" : "0"
+            state.harvestSkills.empty() ? "0" : "1",
+            state.phase
         });
     }
 
@@ -1496,16 +2375,44 @@ namespace
             return;
         }
         auto const& sources = Sbrpg::Materials::LootSourceIndex::Find(itemId);
+        std::vector<uint32> fishingPools;
+        if (std::find(material->methods.begin(), material->methods.end(),
+            Sbrpg::Materials::AcquisitionMethod::Fishing) != material->methods.end())
+            fishingPools = ResolveFishingPoolEntriesForItem(itemId);
+        std::vector<uint32> gatheringNodes;
+        if (std::find(material->methods.begin(), material->methods.end(),
+            Sbrpg::Materials::AcquisitionMethod::GameObjectNode) != material->methods.end())
+            gatheringNodes = ResolveNodeEntriesForItem(itemId);
+        uint32 totalSources = static_cast<uint32>(sources.size() + fishingPools.size() + gatheringNodes.size());
         uint32 index = 0;
+        for (uint32 nodeEntry : gatheringNodes)
+        {
+            SendAddon(player, type, Sbrpg::Protocol::Build("MATERIAL_SOURCE", {
+                requestId, std::to_string(index++), std::to_string(totalSources),
+                std::to_string(nodeEntry), "gathering node", "node", "normal"
+            }));
+        }
+        for (uint32 poolEntry : fishingPools)
+        {
+            SendAddon(player, type, Sbrpg::Protocol::Build("MATERIAL_SOURCE", {
+                requestId, std::to_string(index++), std::to_string(totalSources),
+                std::to_string(poolEntry), "fishing pool", "pool", "normal"
+            }));
+        }
         for (auto const& source : sources)
         {
             SendAddon(player, type, Sbrpg::Protocol::Build("MATERIAL_SOURCE", {
-                requestId, std::to_string(index++), std::to_string(sources.size()),
+                requestId, std::to_string(index++), std::to_string(totalSources),
                 std::to_string(source.creatureEntry), Sbrpg::Materials::MethodName(source.method),
                 Acore::StringFormat("{:.3f}", source.estimatedChance),
                 source.questRequired ? "quest" : "normal"
             }));
         }
+        // Empty source sets still need a terminal frame so the addon can
+        // distinguish "no sources" from a delayed or incomplete response.
+        SendAddon(player, type, Sbrpg::Protocol::Build("MATERIAL_SOURCES_END", {
+            requestId, std::to_string(totalSources)
+        }));
     }
 
     ChatMsg ReplyChatType(uint32 /*type*/)
@@ -1567,8 +2474,50 @@ namespace
             {
                 SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("HELLO_ACK", { frame.requestId, "1" }));
                 SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("CAPABILITIES", {
-                    frame.requestId, "1", "MATERIAL_CATALOG,MATERIAL_SOURCES,START_MATERIAL,MATERIAL_STATUS"
+                    frame.requestId, "1", "START,STATUS,SET,SET_CONFIG,STOP,MATERIAL_CATALOG,MATERIAL_SOURCES,START_MATERIAL,START_FISHING,MATERIAL_STATUS"
                 }));
+                return true;
+            }
+            if (opcode == "SET_CONFIG" && frame.fields.size() >= 2)
+            {
+                std::string error;
+                if (SetRuntimeConfig(frame.fields[0], frame.fields[1], &error))
+                {
+                    SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ACK", { frame.requestId, "SET_CONFIG", frame.fields[0] }));
+                    SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("SETTING", { frame.fields[0], frame.fields[1] }));
+                }
+                else
+                    SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ERROR", { frame.requestId, "INVALID_CONFIG", error }));
+                return true;
+            }
+            if (opcode == "START_FISHING" && frame.fields.size() >= 3)
+            {
+                uint32 duration = 0, quantity = 0;
+                try
+                {
+                    duration = static_cast<uint32>(std::stoul(frame.fields[2]));
+                    if (frame.fields.size() >= 4) quantity = static_cast<uint32>(std::stoul(frame.fields[3]));
+                }
+                catch (...) { SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ERROR", { frame.requestId, "INVALID_FISHING_GOAL" })); return true; }
+                bool const byZone = frame.fields[0] == "zone";
+                bool const prioritize = frame.fields.size() >= 5 ? frame.fields[4] == "1" : runtimeSettings.fishingPrioritizePools;
+                bool const openWaterOnly = frame.fields.size() >= 6 ? frame.fields[5] == "1" : runtimeSettings.fishingOpenWaterOnly;
+                uint32 itemId = 0;
+                std::string error;
+                if (!byZone)
+                {
+                    auto const* material = ResolveMaterial(frame.fields[1], itemId);
+                    if (!material || std::find(material->methods.begin(), material->methods.end(), Sbrpg::Materials::AcquisitionMethod::Fishing) == material->methods.end())
+                        error = "Select a fishing material or use zone fishing.";
+                }
+                if (error.empty() && !StartFishingMaterial(player, itemId, duration, quantity, &error, byZone, prioritize, openWaterOnly))
+                    ;
+                if (!error.empty()) SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ERROR", { frame.requestId, error }));
+                else
+                {
+                    SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ACK", { frame.requestId, opcode }));
+                    SendAddon(player, ReplyChatType(type), AddonMaterialStatus(player, frame.requestId));
+                }
                 return true;
             }
             if (opcode == "MATERIAL_CATALOG")
@@ -1722,10 +2671,10 @@ namespace
             if (it == materialStates.end())
                 handler->SendSysMessage("No material run is active.");
             else
-                handler->PSendSysMessage("Material run: item {}, {} / {} items, {} kills, {} loot events, {} corpse timeouts, {} sec remaining, phase '{}', return {}, home map {} ({:.1f}, {:.1f}, {:.1f}), distance {:.1f}, reason '{}'.",
+                handler->PSendSysMessage("Material run: item {}, {} / {} items, {} kills, {} loot events, {} corpse timeouts, {} remaining, phase '{}', return {}, home map {} ({:.1f}, {:.1f}, {:.1f}), distance {:.1f}, reason '{}'.",
                     it->second.itemId, it->second.gatheredItems, it->second.quantityGoal,
                     it->second.kills, it->second.lootEvents, it->second.corpseTimeouts,
-                    Sbrpg::ActivityRemainingSeconds(it->second.session, getMSTime()),
+                    FormatDuration(Sbrpg::ActivityRemainingSeconds(it->second.session, getMSTime())),
                     it->second.phase,
                     it->second.session.returnRequested ? "yes" : "no",
                     it->second.session.startMapId, it->second.session.startX,
@@ -1902,37 +2851,72 @@ namespace
 namespace Sbrpg
 {
     bool Start(Player* player, Profession profession, std::vector<uint32> entries,
-               uint32 durationMinutes, std::string* error)
+               uint32 durationMinutes, std::string* error, uint32 targetItemId,
+               uint32 quantityGoal)
     {
-        if (!player || !GET_PLAYERBOT_AI(player) || !IsSelfBot(player))
-        { if (error) *error = "Enable self-bot mode first (.playerbots bot self)."; return false; }
+        // Every node-farming entry point shares this guard. Do not replace an
+        // active material session: its return target, equipment snapshot, and
+        // loot ownership must remain intact until it finishes returning.
+        auto const materialIt = materialStates.find(player ? player->GetGUID() : ObjectGuid::Empty);
+        if (materialIt != materialStates.end() && materialIt->second.active)
+        {
+            if (error)
+                *error = "Stop the active material session before starting node farming.";
+            return false;
+        }
+        if (!RuntimeEnabled())
+        { if (error) *error = "SBRPG is disabled by SelfBotRpg.Enable."; return false; }
+        if (!player)
+        { if (error) *error = "Player is unavailable."; return false; }
+        auto existingMaterial = materialStates.find(player->GetGUID());
+        if (existingMaterial != materialStates.end() && existingMaterial->second.active)
+        { if (error) *error = "Stop the active material session first."; return false; }
         if (entries.empty()) { if (error) *error = "Select at least one node type."; return false; }
+        bool enabledBySbrpg = false;
+        if (!EnsureSelfBot(player, enabledBySbrpg))
+        { if (error) *error = "Unable to enable self-bot mode."; return false; }
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
+        bool const needsMining = profession == Profession::Mining || profession == Profession::Both;
+        bool const needsHerbalism = profession == Profession::Herbalism || profession == Profession::Both;
+        bool const hasMining = ai->HasSkill(SKILL_MINING) && HasHarvestTool(player, SKILL_MINING);
+        bool const hasHerbalism = ai->HasSkill(SKILL_HERBALISM);
+        if (needsMining && !hasMining && profession == Profession::Mining)
+        { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "Mining requires the Mining skill and a mining pick."; return false; }
+        if (needsHerbalism && !hasHerbalism && profession == Profession::Herbalism)
+        { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "Herbalism requires the Herbalism skill."; return false; }
+        if (profession == Profession::Both && !hasMining && !hasHerbalism)
+        { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "Mining and Herbalism require at least one learned profession with its required tool."; return false; }
         FarmState& state = states[player->GetGUID()];
         state = FarmState();
         state.active = true;
+        state.selfBotEnabledBySbrpg = enabledBySbrpg;
         state.runId = ++nextRunId;
         state.revision = 0;
         SetPhase(state, FarmPhase::Planning, "loading route nodes");
         state.profession = profession;
         state.entries = std::move(entries); state.currentSpawn = 0; state.harvested = 0;
+        state.targetItemId = targetItemId;
+        state.quantityGoal = quantityGoal;
+        state.inventoryStart = targetItemId ? player->GetItemCount(targetItemId, true) : 0;
+        state.inventoryCount = state.inventoryStart;
         Sbrpg::BeginActivitySession(state.session, player, durationMinutes, getMSTime());
         state.lastGatheredNode = ObjectGuid::Empty; state.activeGatherNode = ObjectGuid::Empty; state.gatheredItems = 0;
         state.zoneId = player->GetZoneId(); state.mapId = player->GetMapId();
         state.startedInside = !player->IsOutdoors();
         state.approachNode = ObjectGuid::Empty;
         state.pendingGatherNode = ObjectGuid::Empty;
-        state.attemptsBeforeBlacklist = sConfigMgr->GetOption<uint32>("SelfBotRpg.AttemptsBeforeBlacklist", 3);
-        state.failedBlacklistSeconds = sConfigMgr->GetOption<uint32>("SelfBotRpg.FailedNodeBlacklistSeconds", 120);
-        state.emptyBlacklistSeconds = sConfigMgr->GetOption<uint32>("SelfBotRpg.EmptyNodeBlacklistSeconds", 120);
-        state.gatherSettleDelayMs = sConfigMgr->GetOption<uint32>("SelfBotRpg.GatherSettleDelayMs", 500);
-        state.stayInCurrentZone = sConfigMgr->GetOption<bool>("SelfBotRpg.StayInCurrentZone", true);
+        state.attemptsBeforeBlacklist = runtimeSettings.attemptsBeforeBlacklist;
+        state.failedBlacklistSeconds = runtimeSettings.failedNodeBlacklistSeconds;
+        state.emptyBlacklistSeconds = runtimeSettings.emptyNodeBlacklistSeconds;
+        state.gatherSettleDelayMs = runtimeSettings.gatherSettleDelayMs;
+        state.stayInCurrentZone = runtimeSettings.stayInCurrentZone;
         state.route = Sbrpg::NodeRepository::LoadRoute(player, state,
             [profession](uint32 entry) { return IsGatheringEntry(profession, entry); });
         Debug(player, Acore::StringFormat("loaded {} route nodes on map {} in zone {}", state.route.size(), player->GetMapId(), state.zoneId));
         state.routeIndex = 0;
         state.route = Sbrpg::BuildRoutePlan(std::move(state.route), player->GetPositionX(),
                                              player->GetPositionY(), player->GetPositionZ());
-        PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
+        ai = GET_PLAYERBOT_AI(player);
         state.lootStrategy.SetStrategy("loot");
         state.lootStrategy.Acquire(ai);
         state.gatherStrategy.SetStrategy("gather");
@@ -1946,6 +2930,7 @@ namespace Sbrpg
         auto it = states.find(player->GetGUID());
         if (it == states.end()) return;
         FarmState& state = it->second;
+        bool const disableSelfBot = state.selfBotEnabledBySbrpg;
         Transition(state, FarmPhase::Stopped, std::move(reason));
         state.active = false;
         player->StopMoving();
@@ -1956,6 +2941,7 @@ namespace Sbrpg
             state.gatherStrategy.Release(ai);
         }
         PublishStatus(player);
+        DisableOwnedSelfBot(player, disableSelfBot);
     }
 
     void Stop(Player* player)
@@ -2017,7 +3003,7 @@ namespace Sbrpg
         if (state->session.durationMs != 0)
         {
             uint32 const remaining = Sbrpg::ActivityRemainingSeconds(state->session, getMSTime());
-            timer = Acore::StringFormat(", {}:{:02} remaining", remaining / 60, remaining % 60);
+            timer = ", " + FormatDuration(remaining) + " remaining";
         }
         return "SelfBot RPG: " + std::string(PhaseName(state->phase)) + reason + " | farming " + std::string(ProfessionName(state->profession)) + " (" +
                std::to_string(state->route.size()) + " eligible route nodes, " +
@@ -2028,6 +3014,7 @@ namespace Sbrpg
 
 void AddSelfbotRpgScripts()
 {
+    LoadRuntimeSettings();
     new SelfbotRpgRegistrar();
     new SelfbotRpgStatusScript();
     new SelfbotRpgLootScript();

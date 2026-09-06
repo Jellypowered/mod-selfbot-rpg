@@ -20,6 +20,7 @@ namespace Sbrpg
     struct ActivityState
     {
         bool active = false;
+        bool selfBotEnabledBySbrpg = false;
         ActivityPhase phase = ActivityPhase::Stopped;
         uint64_t runId = 0;
         uint32_t revision = 0;
@@ -27,6 +28,7 @@ namespace Sbrpg
         uint32_t lastStatusPublishMs = 0;
         uint32_t lastStateChangeMs = 0;
         uint32_t lastActionMs = 0;
+        uint32_t lootWaitSinceMs = 0;
         std::string lastReason;
         ActivitySession session;
     };

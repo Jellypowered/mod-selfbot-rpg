@@ -54,6 +54,10 @@ namespace Sbrpg
         uint32 gatheredItemsAtAttempt = 0;
         uint8 gatherRetries = 0;
         uint32 gatheredItems = 0;
+        uint32 targetItemId = 0;
+        uint32 quantityGoal = 0;
+        uint32 inventoryStart = 0;
+        uint32 inventoryCount = 0;
         std::string activity = "starting";
         uint32 attemptsBeforeBlacklist = 0;
         uint32 failedBlacklistSeconds = 0;
@@ -74,7 +78,8 @@ namespace Sbrpg
     void Transition(FarmState& state, FarmPhase phase, std::string reason);
 
     bool Start(Player* player, Profession profession, std::vector<uint32> entries,
-               uint32 durationMinutes, std::string* error);
+               uint32 durationMinutes, std::string* error, uint32 targetItemId = 0,
+               uint32 quantityGoal = 0);
     void Finish(Player* player, std::string reason);
     void Stop(Player* player);
     FarmState const* Get(Player* player);
