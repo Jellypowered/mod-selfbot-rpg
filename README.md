@@ -38,22 +38,29 @@ Please read these before starting a long run:
    aura is not stored in the first spell-effect slot, including the Headless
    Horseman's Mount. The module does not teleport, clip, inject unsafe splines,
    or use GM relocation.
-4. **Account Security** You will need a GM level account to utilize this, unless you change the following in playerbots.conf
+4. **Account security:** You need a GM-level account to use this by default.
+   You can change the following setting in `playerbots.conf` if appropriate for
+   your private server:
+
 ```
 # Player can be activated as a bot (selfbot)
 # Selfbot permission level (0 = disabled, 1 = GM only (default), 2 = all players, 3 = activate on login)
 AiPlayerbot.SelfBotLevel = 1
 ```
-`Set this to 2 or change your account security level.`
+Set this to `2`, or use an account with the required security level.
 
 5. **Beta status:** node live-awareness and mount-aware travel are working well
    in prototype testing, but fishing, custom database rows, profession
    requirements, bag handling, danger screening, loot edge cases, and
    long-duration runs still need broader live testing.
 
-6. **PRIVATE USE ONLY** It should go without saying, this is for personal use, on a server you host only.
+6. **Private use only:** This project is intended for personal use on a server
+   you host. Follow the rules of any server on which you play.
 
-7. **It's slower than third party bots** This ain't Honorb*ddy, W\*obot, or any other highly optimized for pay botting solution. I've made efforts to make it efficient, but it does not mimic a real player. This module works within the limitations of the hooks available and functionality provided by `mod-playerbots`. Loot handling remains dependent on stock playerbot behavior and should be reported if items are actually missed.
+7. **Manage your expectations:** This is slower than commercial botting tools
+   and does not try to mimic a real player. It works within the hooks and
+   functionality provided by `mod-playerbots`. Loot handling remains dependent
+   on stock playerbot behavior, so report actual missing items with logs.
 
 If something behaves incorrectly, please report it through the repository's
 **Issues** section. Include the module version or commit, AzerothCore and
@@ -67,8 +74,16 @@ You should be comfortable installing AzerothCore modules and building the
 server before using this project.
 
 1. Place this module in `modules/mod-selfbot-rpg`.
-2. Copy `addon/SelfBotRPG` into the client directory:
-   `Interface/AddOns/SelfBotRPG`.
+2. Install the addon from the separate repository:
+   <https://github.com/Jellypowered/SelfBotRPG-Addon>
+   - Download the ZIP, rename the extracted folder to `SelfBotRPG`, and place
+     it in your `Interface/AddOns` directory.
+   - Or run this from `Interface/AddOns`:
+
+     ```bash
+     git clone https://github.com/Jellypowered/SelfBotRPG-Addon.git SelfBotRPG
+     ```
+
 3. Build the server from the AzerothCore repository:
 
    ```bash
@@ -78,8 +93,8 @@ server before using this project.
    Use the equivalent build command if your checkout provides a wrapper.
 
 The build installs the module configuration as
-`env/dist/etc/modules/mod-selfbot-rpg.conf`. Restart or reload the worldserver after
-changing server configuration. Settings changed in the addon are applied live
+`env/dist/etc/modules/mod-selfbot-rpg.conf`. Restart or reload the worldserver
+after changing server configuration. Settings changed in the addon are applied live
 and take priority for the current session.
 
 Start controls automatically enable selfbot mode when necessary. Stop and
@@ -245,7 +260,7 @@ Important behavior:
 - Stock loot is prioritized over material travel.
 - Normal playerbot chest and gameobject loot remains enabled.
 - During route movement and return, queued kills and chests are approached with
-  normal bounded movement before stock playerbot actions open and loot them;
+  normal bounded movement before stock playerbot actions open and loot them.
 - multiple post-combat corpse GUIDs are retained independently for stock loot;
 - node/material loot targets expire after bounded recovery time (currently 10
   seconds once interaction is stalled), while active casts/windows remain
@@ -286,7 +301,8 @@ Use material farming only in a zone appropriate for the character.
 - Useful incomplete mmap corridors may be followed segment by segment.
 - Movement is bounded and uses normal `MovementAction` pacing.
 - No teleport, clipping, click-to-move injection, or unsafe direct spline
-  movement is used, but the playerbot system isn't perfect, ymmv.
+  movement is used. Playerbot behavior and path quality can still vary by
+  server, map data, and playerbot revision.
 - Players, pets, totems, friendly creatures, bosses, and default-prohibited
   elites are not proactively targeted.
 - Tapped, claimed, unreachable, evading, or otherwise unsafe creatures are
@@ -522,8 +538,9 @@ src/Materials/CreatureSpawnRepository.*
 src/Materials/HotspotPlanner.*
 src/Materials/MaterialFarmState.h
 src/Protocol/SbrpgProtocol.*
-addon/SelfBotRPG/SelfBotRPG.lua       client panel and protocol client
 docs/addon-protocol.md                JLYRPG2 wire format
+https://github.com/Jellypowered/SelfBotRPG-Addon
+                                      standalone addon repository
 ```
 
 ## AI assistance disclaimer
@@ -553,5 +570,20 @@ and playerbot APIs, keep movement mmap-validated and bounded, keep protocol
 replies whisper-isolated, avoid fabricating travel completion, and prefer a
 clear refusal over unsafe or ambiguous automation.
 
-## Troubleshooting: 
-1. Main thing I wanted to add here, if your runs keep getting logged out, be paitent. A `mod-playerbots` commit will be merged in soon that addresses this. You could use something like AHK to send a space bar to the wow window every 4-5 minutes or so if you really wanted. I'd be watching sessions so you can provide feedback and help improve the module! Just make sure to manage your expectations, i'm not a wizard, Harry.
+## Troubleshooting
+
+If long runs log out, check the client-side AFK restriction first. A compatible
+`mod-playerbots` revision may improve selfbot AFK handling, but this module does
+not manipulate AFK flags. For testing on a private server, use normal client
+input only and follow the rules of the environment.
+
+If the addon is missing, verify that the separate repository is installed as:
+
+```text
+Interface/AddOns/SelfBotRPG
+```
+
+For other problems, include the module commit, addon commit, AzerothCore and
+`mod-playerbots` revisions, configuration, exact command or addon steps, and
+relevant worldserver logs. State whether the issue involved movement, mounting,
+live-node rerouting, combat, loot, fishing, or return-home behavior.
