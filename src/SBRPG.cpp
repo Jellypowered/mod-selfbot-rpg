@@ -25,6 +25,7 @@
 #include "WarriorAiObjectContext.h"
 #include "Chat.h"
 #include "ChatCommand.h"
+#include "CheckMountStateAction.h"
 #include "CellImpl.h"
 #include "Config.h"
 #include "DatabaseEnv.h"
@@ -53,6 +54,7 @@
 #include "PathGenerator.h"
 #include "ScriptMgr.h"
 #include "ServerFacade.h"
+#include "SpellMgr.h"
 #include "Strategy.h"
 #include "StringFormat.h"
 #include "Timer.h"
@@ -573,6 +575,7 @@ namespace
                     LootStrategyValue::instance(it->second.previousLootStrategy));
                 it->second.lootStrategyOverridden = false;
             }
+            it->second.mountStrategy.Release(ai);
             it->second.materialStrategy.Release(ai);
             it->second.materialLootStrategy.Release(ai);
             it->second.lootStrategy.Release(ai);
@@ -899,6 +902,12 @@ namespace
         state.rpgStrategy.Suspend(ai);
         state.materialStrategy.SetStrategy("sbrpg material");
         state.materialStrategy.Acquire(ai);
+        // Reuse playerbot's mount controller. It evaluates the character's
+        // learned riding skill and available mounts, then chooses the best
+        // valid ground or flying mount automatically. Fishing may mount while
+        // travelling to water or between pools, then dismount before casting.
+        state.mountStrategy.SetStrategy("mount");
+        state.mountStrategy.Acquire(ai);
         return true;
     }
 
@@ -951,12 +960,108 @@ namespace
         Debug(player, Acore::StringFormat("material return requested: {}", reason));
     }
 
+    bool CastBestLearnedMount(Player* player, PlayerbotAI* ai)
+    {
+        if (!player || !ai)
+            return false;
+
+        struct MountCandidate
+        {
+            uint32 spellId = 0;
+            int32 speed = 0;
+        };
+        std::vector<MountCandidate> candidates;
+        for (auto const& [spellId, playerSpell] : player->GetSpellMap())
+        {
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+            if (!playerSpell || playerSpell->State == PLAYERSPELL_REMOVED ||
+                !playerSpell->Active || !spellInfo || spellInfo->IsPassive() ||
+                !spellInfo->HasAura(SPELL_AURA_MOUNTED))
+                continue;
+
+            // The stock collector checks only Effects[0] for MOUNTED. Hybrid
+            // and exotic mounts such as the Headless Horseman's Mount can put
+            // that aura in another effect slot, so retain every learned mount
+            // and rank it by its strongest applicable speed aura.
+            int32 speed = 0;
+            for (SpellEffectInfo const& effect : spellInfo->Effects)
+            {
+                if (effect.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED ||
+                    effect.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+                    speed = std::max(speed, effect.CalcValue(player));
+            }
+            candidates.push_back({ spellId, speed });
+        }
+
+        std::sort(candidates.begin(), candidates.end(),
+            [](MountCandidate const& left, MountCandidate const& right)
+            {
+                return left.speed > right.speed;
+            });
+        for (MountCandidate const& candidate : candidates)
+        {
+            if (!ai->CanCastSpell(candidate.spellId, player, true))
+                continue;
+            if (player->isMoving())
+                player->StopMoving();
+            if (ai->CastSpell(candidate.spellId, player))
+            {
+                Debug(player, Acore::StringFormat(
+                    "travel mount fallback cast learned spell {} (speed {})",
+                    candidate.spellId, candidate.speed));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool PrepareTravelMove(Player* player)
+    {
+        if (!player || player->IsMounted())
+            return true;
+
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
+        if (!ai)
+            return true;
+
+        // The mount action refuses to run unless the mount strategy is
+        // present. Reassert it here as a defensive check because other
+        // playerbot strategy changes can remove non-combat strategies while
+        // an SBRPG activity is active.
+        if (!ai->HasStrategy("mount", BOT_STATE_NON_COMBAT))
+            ai->ChangeStrategy("+mount", BOT_STATE_NON_COMBAT);
+
+        // MountStrategy intentionally has no triggers. It is only the policy
+        // flag checked by CheckMountStateAction; merely leasing "mount" cannot
+        // initiate a cast. Invoke the stock selector directly so this works
+        // independently of engine action scheduling and stale target values.
+        CheckMountStateAction mountAction(ai);
+        if (!mountAction.isUseful())
+            return true;
+        if (!mountAction.Mount())
+        {
+            if (!CastBestLearnedMount(player, ai))
+            {
+                Debug(player, "travel mount check found no usable learned mount");
+                return true;
+            }
+            return player->IsMounted();
+        }
+
+        Debug(player, "travel mount requested through stock mount selector");
+        // Mount casts are asynchronous. Do not issue movement in the same tick
+        // or it will interrupt the cast before the mounted aura is applied.
+        return player->IsMounted();
+    }
+
     class SelfbotMaterialTravel : public MovementAction
     {
     public:
         SelfbotMaterialTravel(PlayerbotAI* ai) : MovementAction(ai, "sbrpg material travel") { }
         bool MoveToHotspot(uint32 mapId, float x, float y, float z)
         {
+            if (!PrepareTravelMove(bot))
+                return false;
             return MoveTo(mapId, x, y, z, false, false, false, false,
                 MovementPriority::MOVEMENT_NORMAL, false);
         }
@@ -1312,6 +1417,11 @@ namespace
                     return false;
                 }
                 SetMaterialPhase(bot, state, "fishing pool");
+                if (bot->IsMounted())
+                {
+                    bot->Dismount();
+                    return true;
+                }
             }
 
             // The stock action searches only about 60 yards. SBRPG keeps the
@@ -1355,6 +1465,8 @@ namespace
                 if (fishingSpot.IsValid() && Sbrpg::BuildRouteStep(bot,
                     fishingSpot.GetPositionX(), fishingSpot.GetPositionY(), fishingSpot.GetPositionZ(), waterStep))
                 {
+                    if (!PrepareTravelMove(bot))
+                        return true;
                     if (Sbrpg::FollowRouteStep(bot, waterStep) || IssueBoundedMove(waterStep))
                         return true;
                     Debug(bot, Acore::StringFormat("water route built but movement was rejected ({:.1f}, {:.1f}, {:.1f})",
@@ -1373,7 +1485,10 @@ namespace
                     return true;
                 }
                 // The stock action may still succeed when its cached spot is
-                // not mmap-routeable from this controller tick.
+                // not mmap-routeable from this controller tick. Apply the
+                // same mount gate before allowing that fallback movement.
+                if (!PrepareTravelMove(bot))
+                    return true;
                 if (moveNearWater.Execute(Event("sbrpg move near water")))
                     return true;
                 if (state.fishingWaterLastReportMs == 0 || now - state.fishingWaterLastReportMs >= 5000)
@@ -1388,6 +1503,12 @@ namespace
             {
                 SetMaterialPhase(bot, state, "no reachable water found");
                 Sbrpg::RequestActivityReturn(state.session, now, "no reachable water");
+                return true;
+            }
+
+            if (bot->IsMounted())
+            {
+                bot->Dismount();
                 return true;
             }
 
@@ -1940,8 +2061,13 @@ namespace
                 {
                     SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending,
                         reroutingToLiveNode ? "rerouting to live node" : "approaching live gathering node");
-                    MoveNear(go, sPlayerbotAIConfig.contactDistance,
-                        MovementPriority::MOVEMENT_NORMAL);
+                    if (!bot->isMoving() && !bot->IsNonMeleeSpellCast(true))
+                    {
+                        if (!PrepareTravelMove(bot))
+                            return true;
+                        MoveNear(go, sPlayerbotAIConfig.contactDistance,
+                            MovementPriority::MOVEMENT_NORMAL);
+                    }
                     return false;
                 }
                 if (mutableState.pendingGatherNode != go->GetGUID())
@@ -2079,6 +2205,8 @@ namespace
                 return true;
             }
             SetPhase(mutableState, Sbrpg::FarmPhase::Travelling, "following validated mmap segment");
+            if (!PrepareTravelMove(bot))
+                return false;
             bool const issued = MoveTo(bot->GetMapId(), mutableState.step.x, mutableState.step.y, mutableState.step.z,
                                        false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
             // A validated PathGenerator result is not proof that playerbots
@@ -2157,6 +2285,8 @@ namespace
                 state.stepIssued = false;
                 return true;
             }
+            if (!PrepareTravelMove(bot))
+                return false;
             bool const issued = MoveTo(bot->GetMapId(), state.step.x, state.step.y, state.step.z,
                                        false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
             if (!issued && !bot->isMoving() && now - state.stepBuiltMs >= 1000)
@@ -3041,6 +3171,8 @@ namespace Sbrpg
         state.lootStrategy.Acquire(ai);
         state.gatherStrategy.SetStrategy("gather");
         state.gatherStrategy.Acquire(ai);
+        state.mountStrategy.SetStrategy("mount");
+        state.mountStrategy.Acquire(ai);
         ai->ChangeStrategy("+sbrpg farm", BOT_STATE_NON_COMBAT);
         return true;
     }
@@ -3057,6 +3189,7 @@ namespace Sbrpg
         if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
         {
             ai->ChangeStrategy("-sbrpg farm", BOT_STATE_NON_COMBAT);
+            state.mountStrategy.Release(ai);
             state.lootStrategy.Release(ai);
             state.gatherStrategy.Release(ai);
         }

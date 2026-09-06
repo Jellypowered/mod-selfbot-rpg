@@ -16,7 +16,9 @@
 - `luac -p addon/SelfBotRPG/SelfBotRPG.lua`
 - `git diff --check`
 - `/stuff/Source/azerothcore-wotlk/acore.sh compiler build`
-- Describe live tests, including optional-module compatibility when relevant.
+- Describe live tests, including mount selection with normal and exotic learned
+  mounts, live-node rerouting, dangerous nearby groups, and optional-module
+  compatibility when relevant.
 
 
 ## How to Test the Changes:
@@ -24,4 +26,5 @@
 
 1. Describe setup and required modules/configuration.
 2. Describe exact commands or addon actions.
-3. Describe expected status, movement, loot, and return behavior.
+3. Describe expected status, movement, mount or walking fallback, danger
+   skips, loot, and return behavior.

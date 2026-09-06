@@ -29,8 +29,15 @@ Please read these before starting a long run:
    player's current map and zone. The module does not yet choose a zone or
    travel between zones.
 3. **Normal-player movement:** routes use bounded, mmap-validated playerbot
-   movement. The module does not teleport, clip, inject unsafe splines, or use
-   GM relocation.
+   movement. While travelling between nodes or creature hotspots, SBRPG leases
+   the stock playerbot mount strategy. Before each travel move, SBRPG invokes
+   that controller when the character is unmounted. It checks the character's
+   riding skill, learned or available mounts, outdoor state, combat state, and
+   ground or flight restrictions before selecting the best valid mount. A
+   learned-spell fallback also handles hybrid and exotic mounts whose mounted
+   aura is not stored in the first spell-effect slot, including the Headless
+   Horseman's Mount. The module does not teleport, clip, inject unsafe splines,
+   or use GM relocation.
 4. **Account Security** You will need a GM level account to utilize this, unless you change the following in playerbots.conf
 ```
 # Player can be activated as a bot (selfbot)
@@ -39,9 +46,10 @@ AiPlayerbot.SelfBotLevel = 1
 ```
 `Set this to 2 or change your account security level.`
 
-5. **Beta status:** node live-awareness is working well in prototype testing,
-   but fishing, custom database rows, profession requirements, bag handling,
-   loot edge cases, and long-duration runs still need broader live testing.
+5. **Beta status:** node live-awareness and mount-aware travel are working well
+   in prototype testing, but fishing, custom database rows, profession
+   requirements, bag handling, danger screening, loot edge cases, and
+   long-duration runs still need broader live testing.
 
 6. **PRIVATE USE ONLY** It should go without saying, this is for personal use, on a server you host only.
 
@@ -255,15 +263,20 @@ Important behavior:
 
 ## Level eligibility and safety boundary
 
-The current release does not compare player level with source-creature level
-when starting or selecting a material target. It validates source identity,
-map/zone, hostility, attackability, line of sight, distance, and normal
-creature rank, but a low-level character may still encounter a database-proven
+The current release does not yet enforce a complete player-versus-source level
+or local danger gate when starting or selecting a material target. It validates
+source identity, map/zone, hostility, attackability, line of sight, distance,
+and normal creature rank, but a low-level character may still encounter a
 source above its level.
 
-Use material farming only in a zone appropriate for the character. A player-
-versus-source level gate, including an explicit high-level exemption and clear
-preflight rejection, is planned but is not currently implemented.
+Mount-aware travel is implemented through the stock playerbot selector, with a
+learned-spell fallback for exotic and hybrid mounts. A separate danger-screening
+pass is planned for nodes, material hotspots, and travel corridors. The planned
+policy will temporarily blacklist a candidate for 120 seconds when it is
+surrounded by three or more enemies within 15 yards, or when nearby hostile
+levels and group density indicate that the character is unlikely to solo it.
+This must be a bounded, revalidated decision rather than a permanent exclusion.
+Use material farming only in a zone appropriate for the character.
 
 ## Navigation and safety
 
@@ -468,15 +481,21 @@ Implemented and build-validated:
   10-second stalled-loot/gather-pending recovery, and optional
   `mod-junk-to-gold` coexistence;
 - queued kill and chest approach during routing and return;
+- mount-aware travel before local route movement, including live-node reroutes,
+  fishing water travel, pool transitions, and exotic learned-mount fallback;
 - automatic selfbot enable/disable ownership handling;
 - required full worldserver build.
 
 Still requiring broader runtime or custom-database validation:
 
 - player/source level-appropriateness filtering and low-level preflight rejection;
+- danger-aware node, hotspot, and travel screening with bounded 120-second
+  blacklisting for clearly unsoloable nearby enemy groups;
 - long material and fishing soak tests;
 - live herb/mining node-awareness soak tests, including nodes spawning or
   despawning while travelling;
+- mount selection and travel behavior across normal, flying, exotic, and
+  unavailable-mount characters;
 - solo/party/raid addon cross-talk testing;
 - all corpse-harvest multi-yield and external-skinning cases;
 - custom database validation of Herbalism, Mining, and Engineering corpse harvest;

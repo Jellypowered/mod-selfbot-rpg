@@ -86,6 +86,7 @@ namespace Sbrpg::Materials
         StrategyLease lootStrategy;
         StrategyLease materialLootStrategy;
         StrategyLease gatherStrategy;
+        StrategyLease mountStrategy;
         std::string previousLootStrategy;
         bool lootStrategyOverridden = false;
         StrategyLease materialStrategy;

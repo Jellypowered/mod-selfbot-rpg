@@ -56,6 +56,7 @@ namespace Sbrpg
         uint32 lastGatheredMs = 0;
         StrategyLease lootStrategy;
         StrategyLease gatherStrategy;
+        StrategyLease mountStrategy;
         uint32 zoneId = 0;
         uint32 mapId = 0;
         bool startedInside = false;

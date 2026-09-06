@@ -21,6 +21,14 @@ Implemented:
   waiting at the empty coordinate.
 - Existing mmap-validated, bounded movement and normal movement priority remain
   in use.
+- The stock playerbot mount strategy is leased during node, creature hotspot,
+  and fishing runs. Before travel moves, it automatically evaluates riding
+  skill, available mounts, combat state, outdoor state, and ground or flight
+  restrictions, then selects an appropriate mount. A learned-spell fallback
+  detects mounted auras in every effect slot so hybrid and exotic mounts are
+  supported when the stock collector misses them. Fishing dismounts at water
+  before casting and may remount between pools. This is working well in beta
+  testing and needs refinement rather than a replacement design.
 - Stock playerbot gathering and loot ownership remains unchanged.
 - Multiple post-combat corpse GUIDs are retained for stock loot after combat
   interruption.
@@ -66,7 +74,13 @@ prototype:
 - Add isolated tests for association, duplicate observations, stale records,
   ambiguous coordinate matches, and route selection where practical.
 - Improve debug summaries so selection, association, availability, blacklist,
-  and reroute reasons can be audited without excessive chat spam.
+  danger, and reroute reasons can be audited without excessive chat spam.
+- Add a shared danger evaluator for nodes, material hotspots, live-node
+  approaches, and travel corridors. Initially blacklist a candidate for 120
+  seconds when three or more hostile creatures are within 15 yards, or when
+  nearby two to three level higher enemies form a group unlikely to be
+  soloable. Revalidate before entering the corridor and keep this separate
+  from empty and no-path blacklists.
 - Revisit live availability checks if a core/playerbot revision exposes a more
   authoritative selectable or gatherable state than the current flags and
   `LootObject` validation.
@@ -97,10 +111,14 @@ priority and bounded lifecycle.
 6. Interrupt with combat, including multiple attackers and multiple corpses.
 7. Confirm corpses and chests are approached and handed to stock loot before
    farming resumes.
-8. Test normal node gathering, delayed/multiple yields, and gather-pending
-   timeout recovery.
-9. Test stop, timer, quantity, bag reserve, death/recovery, and return-home.
-10. Repeat with `mod-junk-to-gold` installed and absent; compare actual item
+8. Verify normal, flying, and exotic mount selection before node travel and
+   live-node reroutes; verify walking fallback when no valid mount exists.
+9. Test danger screening around dense camps, higher-level groups, and travel
+   corridors, including 120-second rediscovery after cooldown.
+10. Test normal node gathering, delayed/multiple yields, and gather-pending
+    timeout recovery.
+11. Test stop, timer, quantity, bag reserve, death/recovery, and return-home.
+12. Repeat with `mod-junk-to-gold` installed and absent; compare actual item
     inventory gains rather than relying only on the brief loot-window display.
 
 Record the current phase/reason, route spawn ID, live GUID/entry, distance, and

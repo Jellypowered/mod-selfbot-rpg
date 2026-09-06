@@ -51,5 +51,9 @@ it is never automatically selected by the addon.
 Node `STATUS` phase/reason fields may report live-node reroutes, confirmed-empty
 route-point skips, post-combat loot recovery, or bounded gather-pending timeout.
 These are informational only; node interaction and loot remain owned by stock
-playerbot actions. The optional `mod-junk-to-gold` module does not change this
+playerbot actions. Mount-aware travel is server-side and does not add a protocol
+field: the server may mount before node, live-node, hotspot, water, pool, or
+return movement, then dismount for interaction. Future danger screening should
+remain status-reason text or a versioned capability, not an unannounced change
+to the positional STATUS parser. The optional `mod-junk-to-gold` module does not change this
 protocol and is not required for the addon or server module to function.

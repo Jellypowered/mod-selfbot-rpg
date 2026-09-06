@@ -1211,15 +1211,316 @@ catalog remains compiled into the module.
 **Exit:** every exposed material has at least one valid reachable source or is
 rejected before movement with a precise reason.
 
-### Phase 8 — Adaptive scoring and polish
+### Phase 8 — Adaptive farming, mount-aware travel, and operational polish
 
-1. Feed observed yield/kill/travel data into bounded source ranking.
-2. Improve hotspot cooldowns using respawn observations.
-3. Tune post-combat, corpse, and empty-hotspot delays.
-4. Add summary export/debug logging.
+#### Purpose
 
-**Exit:** repeated runs avoid consistently poor/unreachable hotspots without
-permanently excluding valid low-chance sources.
+Phase 8 turns the current deterministic beta route into a cautious adaptive
+controller. It may prefer sources that have recently produced useful results,
+but it must never learn by bypassing normal-player rules, attacking unsafe
+creatures, abandoning stock loot ownership, or permanently hiding a valid
+source after one bad observation.
+
+The phase covers three related concerns:
+
+1. **Adaptive source selection:** use bounded observations to improve the order
+   of eligible nodes, creatures, pools, and hotspots.
+2. **Travel efficiency:** use the stock playerbot mount selector before local
+   travel when the character is unmounted, including live-node reroutes,
+   creature hotspots, returns, water travel, and fishing-pool transitions.
+3. **Operational polish:** make delays, diagnostics, summaries, and recovery
+   behavior explainable and tunable without changing the safety boundary.
+
+Phase 8 does not implement cross-zone travel, reputation farming, automatic
+catalog downloads, GM movement, or a global modification to playerbot target
+selection. Those remain separate phases or explicit non-goals.
+
+#### 8.1 Evidence model and observation boundaries
+
+Add a versioned, in-memory observation record for each source and route point.
+It must be keyed by stable identifiers rather than raw world pointers:
+
+- node database spawn ID and entry;
+- live node GUID, entry, spawn ID, and associated route point;
+- creature entry, spawn ID when available, and hotspot ID;
+- fishing pool entry and pool coordinate;
+- map, zone, and activity mode;
+- observation timestamp and plan revision.
+
+Record only events SBRPG can prove from server state or existing hooks:
+
+- route segment issued, completed, rejected, or stalled;
+- live node observed, unavailable, claimed, gathered, or timed out;
+- creature selected, killed, corpse looted, harvested, or skipped;
+- requested item quantity actually attributed by the loot hook;
+- fishing cast, successful reel, empty reel, pool miss, or water-route failure;
+- mount request, successful mounted state, rejected mount request, or walking
+  fallback;
+- combat interruption, playerbot loot ownership, and return-home progress.
+
+Do not infer item yield from a disappearing loot window, a successful movement
+request, a selected target, or a completed cast alone. Do not persist learned
+scores across characters or server restarts until a later migration and reset
+policy exists. A configuration or code revision must invalidate incompatible
+observations.
+
+#### 8.2 Bounded scoring model
+
+For each eligible candidate, calculate a local score from explicit components:
+
+```text
+score = evidence confidence
+      * expected requested yield
+      * reachability confidence
+      * availability confidence
+      * recency factor
+      - travel cost
+      - failure penalty
+      - contention penalty
+      - safety and geometry penalty
+```
+
+The first implementation should use simple bounded counters and moving averages,
+not an opaque machine-learning model. Every component must have a documented
+minimum, maximum, decay period, and reason string. Suggested initial bounds:
+
+- cap positive yield and kill evidence per event and per plan revision;
+- cap failure penalties so a source can recover after respawning or a route
+  change;
+- decay stale observations on a short fixed interval;
+- require multiple observations before changing the default route order;
+- retain a deterministic distance and stable-order tie breaker;
+- never promote a candidate that fails eligibility, map, profession, tool,
+  level, faction, elite, combat, or loot-ownership policy.
+
+Separate requested yield from incidental yield. A creature that produces useful
+incidental loot must not outrank a reliable requested-material source solely
+because it produces more total items. For nodes, separate live availability,
+stock gather claim time, gather success, and respawn pressure. For fishing,
+separate open-water success from pool success so an empty pool does not disable
+open-water fallback.
+
+#### 8.3 Hotspot and route adaptation
+
+At each planning revision:
+
+1. Build the eligible candidate set using the existing source index, live
+   observations, profession/tool checks, level policy, and scope rules.
+2. Discard candidates that are unavailable, blacklisted, out of scope, unsafe,
+   or not reachable through the current bounded mmap validation.
+3. Score candidates using the bounded evidence model.
+4. Select the highest-scoring candidate, with distance and stable route order as
+   deterministic tie breakers.
+5. Preserve the current objective through combat, corpse loot, harvesting,
+   gather handoff, and incidental loot.
+6. Replan only after objective completion, a confirmed live-node reroute, a
+   bounded timeout, a respawn revision, or a low-rate planning interval.
+
+Hotspot cooldowns must distinguish these cases:
+
+- **temporarily empty:** no eligible live source was found in a confirmed scan;
+- **temporarily unreachable:** mmap produced no safe segment or movement made
+  no progress;
+- **contested or owned:** another player or stock playerbot owns the target;
+- **recently cleared:** the source was successfully processed and should wait
+  for a respawn observation;
+- **permanently invalid:** the source violates an explicit eligibility rule.
+
+Only the last category may be excluded for the rest of the run. All other
+cooldowns expire, use bounded backoff, and are eligible for rediscovery. A live
+node associated by stable spawn ID takes precedence over its stale database
+coordinate, but a live association must not erase the route point permanently.
+
+#### 8.4 Underground and geometry policy
+
+Underground, cave, water-adjacent, and vertically separated candidates receive a
+bounded geometry penalty rather than an unconditional ban. The penalty should
+consider:
+
+- route distance compared with horizontal distance;
+- number and quality of mmap corridor segments;
+- vertical displacement and floor or water transitions;
+- recent route stalls or recovery nudges;
+- density of alternative eligible candidates;
+- recent requested yield from the candidate.
+
+Do not oscillate between above-ground and underground candidates on every scan.
+Apply a minimum commitment interval and a score margin before switching away
+from the current objective. A lower-scoring underground source may still be
+selected when it is the only eligible source or when its measured requested
+yield clearly justifies the extra travel. Recovery steps remain bounded and
+must never become a shortcut around missing geometry.
+
+#### 8.5 Mount-aware local travel
+
+Before every SBRPG-owned local travel request, verify the character's mounted
+state. If unmounted, ensure the `mount` strategy is present and invoke the
+stock `CheckMountStateAction` directly. The stock selector remains responsible
+for learned riding skill, active learned mount spells, mount speed, outdoor and
+area restrictions, combat state, and ground versus flying restrictions.
+
+Because the pinned playerbot mount collector only recognizes some spell layouts,
+SBRPG may use a narrowly scoped fallback that scans the character's learned
+active spells for `SPELL_AURA_MOUNTED` in every effect slot. The fallback must
+still use `CanCastSpell`, select the fastest valid candidate, and walk normally
+when no valid mount exists. It must never invent a mount spell or grant riding
+skill.
+
+This check applies to:
+
+- database route segments and return-home segments;
+- visible live-node reroutes and live-node approach movement;
+- creature hotspot movement and corpse approach movement;
+- fishing travel to shoreline water and movement between pools.
+
+Fishing dismounts before casting or reeling. Node gathering, corpse loot,
+skinning, and combat retain their normal stock dismount and interaction rules.
+A mount cast is asynchronous, so movement must wait until the cast resolves or
+falls back to normal walking after a bounded failed attempt.
+
+#### 8.6 Danger screening and travel risk
+
+Add a separate danger evaluator, preferably in a reusable farm or travel
+component rather than inside node selection or movement actions. It must be
+called both when selecting a node or material hotspot and before entering the
+final travel corridor or pull range. The evaluator must use fresh, bounded
+world observations and never retain raw creature pointers.
+
+For an unengaged candidate, inspect hostile or attackable creatures around the
+node, hotspot anchor, shoreline cast point, live-node position, and each
+bounded travel segment. Initially mark the candidate as dangerous when any of
+these conservative rules are met:
+
+- three or more hostile creatures are within 15 yards of the candidate;
+- a nearby group contains creatures two or more levels above the player and
+  has enough members that the player would likely pull multiple enemies;
+- a nearby group contains creatures three or more levels above the player,
+  even when the group is smaller, unless a later explicit soloability rule
+  proves it safe;
+- elites, bosses, or other configured non-soloable ranks guard the approach;
+- the route repeatedly enters a dense hostile cluster before reaching the
+  source or a safe interaction position.
+
+The first implementation should prefer false negatives over walking into an
+obvious camp. It must distinguish unrelated distant combat from a group that
+would actually be pulled by the approach. Use creature attackability,
+visibility, distance, level, rank, faction reaction, spawn proximity, and
+current combat or tap ownership where available. Do not count friendly units,
+players, pets, dead creatures, or creatures that are clearly outside the pull
+and interaction corridor.
+
+When danger is confirmed:
+
+1. Do not pull or hand the source to stock gather or combat actions.
+2. Cancel the current candidate's approach objective without teleporting or
+   abandoning unrelated stock combat or loot.
+3. Add a temporary 120-second blacklist keyed by stable node spawn ID, live
+   node identity, hotspot ID, or travel-edge identity.
+4. Record the exact reason, observed count, maximum level delta, rank, and
+   distance in debug telemetry.
+5. Replan to another eligible candidate. Permit rediscovery after the cooldown
+   because creatures may move, die, despawn, or become safe.
+
+Travel danger is not limited to the destination. A corridor that passes within
+15 yards of three or more hostile creatures, or through a level-disadvantaged
+pack, must be rejected or replanned before movement enters that segment. If a
+new group appears during travel, stop issuing the next segment, reevaluate the
+route, and apply the same 120-second edge or candidate cooldown. Never force a
+mount through danger; mounts improve travel speed but do not make an unsafe
+pull soloable.
+
+Keep this policy separate from ordinary no-path and empty-node blacklists so
+operators can distinguish geometry failure from danger avoidance. Expose the
+rule thresholds as conservative settings only after runtime testing; the
+initial 15-yard, three-enemy, and 120-second values should be explicit and
+logged.
+
+#### 8.7 Delay and recovery tuning
+
+Replace scattered magic delays with named, configuration-backed values where
+practical. Tune each delay against observed state rather than applying one
+universal timeout:
+
+- mount cast and retry delay;
+- live-node scan interval;
+- gather claim and settle delay;
+- corpse loot handoff timeout;
+- empty-node and empty-hotspot cooldown;
+- post-combat recovery delay;
+- fishing cast, reel, and pool rediscovery delay;
+- return-home no-progress interval.
+
+Every timeout must state what is protected while it runs. Open loot windows,
+active casts, stock gather claims, combat, and recovery are never interrupted
+just to satisfy an adaptive timer. A timeout should reset the local objective,
+mark a bounded reason, and permit another candidate or a later rediscovery.
+
+#### 8.8 Diagnostics and summaries
+
+Add structured debug records with run ID, plan revision, candidate ID, score
+components, distance, mount decision, and outcome. Rate-limit repeated records
+and avoid logging raw pointers. Useful messages include:
+
+```text
+adaptive candidate: entry 1234, score 0.72, yield 0.40, travel 0.18
+live node reroute: spawn 4567 replaced stale route coordinate
+travel mount: stock selector requested spell 48025
+travel mount: no valid learned mount; walking normally
+hotspot cooldown: temporarily empty for 30 seconds
+hotspot restored: live source observed again
+```
+
+The final summary should report, separately:
+
+- requested units and units per minute;
+- eligible and incidental kills;
+- loot, harvest, and fishing successes;
+- mount requests, successful mounts, and walking fallbacks;
+- travel, combat, loot, recovery, and waiting time;
+- reroutes, skips, cooldowns, route stalls, and return outcome.
+
+Expose a bounded diagnostic snapshot through chat or the addon only when debug
+is enabled. Do not expose internal pointers, unbounded candidate lists, or
+sensitive account data.
+
+#### 8.9 Testing and rollout
+
+Test adaptive behavior in a controlled matrix before enabling it as the default:
+
+1. one reliable node route with no failures;
+2. nodes spawning and despawning during travel;
+3. several live nodes competing with stale database points;
+4. a character with only a ground mount;
+5. a character with flying skill and both mount types;
+6. a character with only an exotic or hybrid mount spell;
+7. a character with no valid mount, proving walking fallback;
+8. creature hotspots with gray selected targets and incidental aggro;
+9. combat interruption followed by multiple corpse loot targets;
+10. fishing from inland water and movement between missing pools;
+11. underground and above-ground alternatives;
+12. full bags, quantity completion, timed return, death, and map change;
+13. existing playerbot loot, gather, travel, and strategy ownership;
+14. optional `mod-junk-to-gold` installed and absent;
+15. solo, party, raid, and addon protocol isolation.
+
+Ship the first implementation with adaptive scoring behind a conservative
+setting or beta flag. Compare adaptive and deterministic route results using
+the same character and scope. Enable adaptive ordering by default only after
+it demonstrates fewer stalls and no increase in unsafe selections, lost loot,
+strategy leakage, mount failures, or unexplained return failures.
+
+**Status:** route and live-node foundations are implemented. Explicit mount
+selection, exotic learned-spell fallback, and live-node travel coverage are
+working well in beta testing. Bounded cooldowns and structured diagnostics are
+partially implemented. Remaining Phase 8 work includes danger screening,
+adaptive scoring, respawn learning, and broader soak testing.
+
+**Exit:** repeated runs measurably reduce wasted travel, repeated empty waits,
+and consistently poor hotspot choices while preserving normal-player movement,
+stock combat and loot ownership, bounded mmap validation, safe walking fallback,
+strategy restoration, and exact requested-item accounting. Every adaptive
+decision is explainable from bounded observations and can recover when a source
+respawns or world conditions change.
 
 ### Phase 9 — Reputation prototype
 
