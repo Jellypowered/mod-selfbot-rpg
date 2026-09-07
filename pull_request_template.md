@@ -28,3 +28,10 @@
 2. Describe exact commands or addon actions.
 3. Describe expected status, movement, mount or walking fallback, danger
    skips, loot, and return behavior.
+
+## Architecture refactors
+
+- [ ] Review domain boundaries against `docs/architecture.md`.
+- [ ] Run `python3 tests/test_restructure.py`, Lua syntax, whitespace checks, and the final compiler build.
+- [ ] Record live beta regression results separately from compiler checks.
+- [ ] Keep future skeletons unavailable and unregistered; preserve optional module independence.

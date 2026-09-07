@@ -135,3 +135,7 @@ luac -p /stuff/Source/azerothcore-wotlk/modules/mod-selfbot-rpg/addon/SelfBotRPG
 git -C /stuff/Source/azerothcore-wotlk/modules/mod-selfbot-rpg diff --check
 /stuff/Source/azerothcore-wotlk/acore.sh compiler build
 ```
+
+## Architecture follow-up
+
+The working beta implementation has been extracted into Nodes, Awareness, Movement, Materials, Fishing and shared service directories. See [architecture](docs/architecture.md). This does not change the historical beta outcomes or establish a new live-play test pass.

@@ -526,12 +526,22 @@ Still requiring broader runtime or custom-database validation:
 ## Related files
 
 ```text
-src/SBRPG.cpp                         controller, commands, protocol dispatch
+src/SBRPG.cpp                         script registration composition
+src/Core/                            registry, config, lifecycle and logging
+src/Integration/                     commands, hooks and playerbot adapters
+src/Nodes/                           node controller, repository and selection
+src/Fishing/                         controller, equipment, sources and state
+src/Movement/MountController.*        shared mount selection and fallback
 src/Activity/ActivityState.h          activity state and telemetry
 src/Session/ActivitySession.*         start/stop/return lifecycle
-src/Farm/RouteFollower.*              bounded mmap route following
-src/Farm/LiveNodeCache.h              structured live node observations
-src/Farm/NodeRepository.*             DB route/live-node association and selection
+src/Movement/RouteFollower.*          bounded mmap route following
+src/Awareness/LiveNodeCache.*          structured live node observations
+src/Awareness/LiveNodeAssociation.*    live scan and spawn association
+src/Loot/                            loot events and stalled-loot recovery
+src/Combat/                          recovery and target eligibility
+src/Safety/                          eligibility and disabled future policies
+src/Reputation/, Questing/, Travel/   disabled future extension contracts
+src/Protocol/                        wire codec, requests and responses
 src/Materials/MaterialCatalog.*       exact item catalog and metadata
 src/Materials/LootSourceIndex.*       reverse loot-source discovery
 src/Materials/CreatureSpawnRepository.*
@@ -539,6 +549,7 @@ src/Materials/HotspotPlanner.*
 src/Materials/MaterialFarmState.h
 src/Protocol/SbrpgProtocol.*
 docs/addon-protocol.md                JLYRPG2 wire format
+docs/architecture.md                  ownership and regression checklist
 https://github.com/Jellypowered/SelfBotRPG-Addon
                                       standalone addon repository
 ```
@@ -587,3 +598,7 @@ For other problems, include the module commit, addon commit, AzerothCore and
 `mod-playerbots` revisions, configuration, exact command or addon steps, and
 relevant worldserver logs. State whether the issue involved movement, mounting,
 live-node rerouting, combat, loot, fishing, or return-home behavior.
+
+## Source architecture
+
+The runtime is split into domain-owned files under `src/`; `SBRPG.cpp` only composes script registration. See [architecture and regression checklist](docs/architecture.md). Reputation, questing, danger screening, and expanded travel skeletons are disabled and do not add beta capabilities.

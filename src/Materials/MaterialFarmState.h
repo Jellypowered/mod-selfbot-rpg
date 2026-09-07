@@ -2,8 +2,9 @@
 #define SELFBOTRPG_MATERIAL_FARM_STATE_H
 
 #include "Activity/ActivityState.h"
-#include "Farm/RouteFollower.h"
-#include "Farm/StrategyLease.h"
+#include "Fishing/FishingTypes.h"
+#include "Movement/RouteFollower.h"
+#include "Integration/StrategyLease.h"
 #include "Materials/HotspotPlanner.h"
 #include "ObjectGuid.h"
 
@@ -14,40 +15,10 @@
 
 namespace Sbrpg::Materials
 {
-    struct FishingPoolPoint
-    {
-        uint32_t guid = 0;
-        uint32_t entry = 0;
-        float x = 0.0f;
-        float y = 0.0f;
-        float z = 0.0f;
-        bool visited = false;
-    };
-
-    struct MaterialFarmState
+    struct MaterialFarmState : FishingState
     {
         bool active = false;
         bool selfBotEnabledBySbrpg = false;
-        bool fishing = false;
-        bool fishingByZone = false;
-        bool fishingOpenWaterOnly = true;
-        bool fishingPrioritizePools = false;
-        bool fishingPoleEquipped = false;
-        ObjectGuid fishingPreviousMainHand;
-        ObjectGuid fishingPreviousOffHand;
-        uint32 fishingLastCastMs = 0;
-        uint32 fishingPoolLastScanMs = 0;
-        uint32 fishingLastLureMs = 0;
-        uint32 fishingWaterLastReportMs = 0;
-        uint32 fishingLureLastReportMs = 0;
-        uint32 fishingLastWaterSearchMs = 0;
-        uint32 lastAddonStatusMs = 0;
-        bool fishingCustomWaterSpot = false;
-        uint16 fishingPoolMisses = 0;
-        bool fishingPoolMode = false;
-        std::vector<FishingPoolPoint> fishingPools;
-        std::size_t fishingPoolIndex = 0;
-        RouteStep fishingPoolStep;
         ActivitySession session;
         uint32_t itemId = 0;
         uint32_t quantityGoal = 0;

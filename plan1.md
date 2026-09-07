@@ -135,7 +135,7 @@ Completed in the first Phase 0 pass:
   reason timestamps, and the activity session;
 - node-specific `FarmState` inherits `ActivityState` while retaining source
   compatibility for current node farming;
-- `Farm/StrategyLease` now owns exact add/suspend/restore behavior for stock
+- `Integration/StrategyLease` now owns exact add/suspend/restore behavior for stock
   `loot` and `gather` strategies;
 - `RouteFollower` is confirmed to accept typed objectives as coordinates and
   remains independent of mining/herbalism node data;
@@ -2478,3 +2478,7 @@ normal corpse loot and stock skinning for all eligible corpses without stale
 loops or lost multi-yields. Additional profession materials may be exposed only
 after their acquisition method, source validation, safety requirements, and
 runtime verification are explicit.
+
+## Refactored ownership
+
+Current implementation ownership is documented in [docs/architecture.md](docs/architecture.md). Future phases should extend those domain boundaries; disabled skeletons are not completed features.

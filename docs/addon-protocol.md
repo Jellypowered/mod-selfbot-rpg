@@ -57,3 +57,7 @@ return movement, then dismount for interaction. Future danger screening should
 remain status-reason text or a versioned capability, not an unannounced change
 to the positional STATUS parser. The optional `mod-junk-to-gold` module does not change this
 protocol and is not required for the addon or server module to function.
+
+## Source ownership
+
+Request handlers/configuration and response publishers live in `src/Protocol/`; script registration and commands live in `src/Integration/`. This extraction does not revise wire fields, capabilities, commands or addon saved variables. See [architecture](architecture.md).

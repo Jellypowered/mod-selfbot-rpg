@@ -12,9 +12,19 @@ namespace Sbrpg
     // while the activity/session fields below remain mode-independent.
     enum class ActivityPhase : uint8_t
     {
-        Stopped, Planning, SelectingNode, BuildingPath, Travelling,
-        CombatPaused, ApproachingNode, GatherPending, Looting,
-        Returning, Recovering, Waiting, Failed
+        Stopped,
+        Planning,
+        SelectingNode,
+        BuildingPath,
+        Travelling,
+        CombatPaused,
+        ApproachingNode,
+        GatherPending,
+        Looting,
+        Returning,
+        Recovering,
+        Waiting,
+        Failed
     };
 
     struct ActivityState
