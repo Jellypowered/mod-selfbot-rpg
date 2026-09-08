@@ -28,13 +28,32 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
             if (state.lastActionMs != 0 && now - state.lastActionMs < actionDelayMs)
                 return false;
             state.lastActionMs = now;
+            if (bot->IsInCombat())
+            {
+                if (state.combatPauseSinceMs == 0)
+                    state.combatPauseSinceMs = now;
+            }
+            else if (state.combatPauseSinceMs != 0)
+            {
+                uint32 const pausedMs = now - state.combatPauseSinceMs;
+                for (auto& entry : state.dangerCooldowns)
+                    if (entry.second >= state.combatPauseSinceMs)
+                        entry.second += pausedMs;
+                if (state.targetSinceMs >= state.combatPauseSinceMs)
+                    state.targetSinceMs += pausedMs;
+                if (state.corpseWaitSinceMs >= state.combatPauseSinceMs)
+                    state.corpseWaitSinceMs += pausedMs;
+                if (state.invalidLootSinceMs >= state.combatPauseSinceMs)
+                    state.invalidLootSinceMs += pausedMs;
+                state.combatPauseSinceMs = 0;
+            }
             UpdateMaterialReturn(bot);
             if (state.fishing)
                 return FishingController(botAI).Execute(state, now);
             if (bot->IsInCombat())
             {
                 SetMaterialPhase(bot, state, state.session.returnRequested ?
-                    "combat before return" : "combat");
+                    "Combat started. Return home is paused." : "Combat started. Material route paused.");
                 return false;
             }
 
@@ -56,7 +75,7 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
                 {
                     state.invalidLootSinceMs = 0;
                     SetMaterialPhase(bot, state, state.session.returnRequested ?
-                        "finishing loot before return" : "looting");
+                        "Returning home after loot finishes." : "Loot opened. Collecting items.");
                     return false;
                 }
                 if (state.invalidLootSinceMs == 0)
@@ -64,7 +83,7 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
                 if (bot->IsInCombat() || now - state.invalidLootSinceMs < 10000 ||
                     !bot->GetLootGUID().IsEmpty())
                 {
-                    SetMaterialPhase(bot, state, "waiting for stock loot target recovery");
+                    SetMaterialPhase(bot, state, "Waiting for loot target to recover.");
                     return false;
                 }
                 Debug(bot, Acore::StringFormat("material releasing stale loot target after 10s: guid {}",
@@ -75,7 +94,7 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
             }
             if (!bot->GetLootGUID().IsEmpty())
             {
-                SetMaterialPhase(bot, state, state.session.returnRequested ? "finishing loot before return" : "looting");
+                SetMaterialPhase(bot, state, state.session.returnRequested ? "Returning home after loot finishes." : "Loot opened. Collecting items.");
                 return false;
             }
 
@@ -88,13 +107,13 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
                 if (pendingObject && bot->GetDistance(pendingObject) > sPlayerbotAIConfig.contactDistance + 0.5f)
                 {
                     SetMaterialPhase(bot, state, state.session.returnRequested ?
-                        "approaching loot before return" : "approaching nearby loot");
+                        "Returning home after nearby loot." : "Moving to corpse to collect loot.");
                     if (!bot->isMoving() && !bot->IsNonMeleeSpellCast(true))
                         travel.MoveNearLoot(pendingObject);
                     return false;
                 }
                 SetMaterialPhase(bot, state, state.session.returnRequested ?
-                    "finishing nearby loot before return" : "yielding to nearby loot");
+                    "Returning home after nearby loot." : "Waiting for playerbot loot to finish.");
                 return false;
             }
 
@@ -127,7 +146,7 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
                         if (bot->GetDistance(corpse) > sPlayerbotAIConfig.contactDistance + 0.5f)
                         {
                             SetMaterialPhase(bot, state, state.session.returnRequested ?
-                                "approaching corpse before return" : "approaching corpse");
+                                "Returning home after corpse loot." : "Moving to corpse to collect loot.");
                             if (!bot->isMoving() && !bot->IsNonMeleeSpellCast(true))
                             {
                                 Sbrpg::RouteStep corpseStep;
@@ -163,11 +182,12 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
                         if (now - state.corpseWaitSinceMs < corpseWaitLimit)
                         {
                             SetMaterialPhase(bot, state, state.session.returnRequested ?
-                                "finishing combat corpse before return" : "waiting for stock loot");
+                                "Returning home after corpse loot." : "Waiting for playerbot loot to finish.");
                             return false;
                         }
                         AI_VALUE(LootObjectStack*, "available loot")->Remove(state.target);
                         ++state.corpseTimeouts;
+                        SetMaterialPhase(bot, state, "Corpse loot timed out. Continuing route.");
                         Debug(bot, Acore::StringFormat("material corpse timed out; skipping entry {}",
                             corpse->GetEntry()));
                     }
@@ -191,17 +211,17 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
                 // select and finish that corpse.
                 if (AI_VALUE(bool, "has available loot"))
                 {
-                    SetMaterialPhase(bot, state, "finishing nearby loot before return");
+                    SetMaterialPhase(bot, state, "Returning home after nearby loot.");
                     return false;
                 }
-                SetMaterialPhase(bot, state, "returning");
+                SetMaterialPhase(bot, state, "Returning home: " + state.session.returnReason);
                 if (IsRecovering())
                     return false;
                 return travel.ReturnHome(state, now);
             }
             if (IsRecovering())
             {
-                SetMaterialPhase(bot, state, "recovering");
+                SetMaterialPhase(bot, state, "Recovering before selecting a material target.");
                 return false;
             }
 
@@ -241,6 +261,7 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
                 state.target = target->GetGUID();
                 state.targetSinceMs = getMSTime();
                 state.corpseWaitSinceMs = 0;
+                SetMaterialPhase(bot, state, Acore::StringFormat("Found {}. Engaging target.", target->GetName()));
                 Debug(bot, Acore::StringFormat("material target: {} (entry {}, gray allowed)",
                     target->GetName(), target->GetEntry()));
             }

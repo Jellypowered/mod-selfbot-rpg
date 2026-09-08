@@ -8,8 +8,20 @@
 #include "Protocol/RequestHandlers.h"
 #include "Protocol/ResponsePublisher.h"
 
+#include <array>
+
 namespace Sbrpg::Runtime
 {
+    namespace
+    {
+        char const* CapabilityList = "START,STATUS,SET,SET_CONFIG,STOP,MATERIAL_CATALOG,MATERIAL_SOURCES,START_MATERIAL,START_FISHING,MATERIAL_STATUS,DANGER_SCREENING,ADAPTIVE_ORDERING,FORCE_STOP";
+        std::array<char const*, 13> const CapabilityNames = {{
+            "START", "STATUS", "SET", "SET_CONFIG", "STOP", "MATERIAL_CATALOG",
+            "MATERIAL_SOURCES", "START_MATERIAL", "START_FISHING", "MATERIAL_STATUS",
+            "DANGER_SCREENING", "ADAPTIVE_ORDERING", "FORCE_STOP"
+        }};
+    }
+
     class SelfbotRpgAddonHook final : public PlayerScript
     {
     public:
@@ -40,10 +52,18 @@ namespace Sbrpg::Runtime
             std::string const& opcode = frame.opcode;
             if (opcode == "HELLO")
             {
-                SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("HELLO_ACK", { frame.requestId, "1" }));
-                SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("CAPABILITIES", {
-                    frame.requestId, "1", "START,STATUS,SET,SET_CONFIG,STOP,MATERIAL_CATALOG,MATERIAL_SOURCES,START_MATERIAL,START_FISHING,MATERIAL_STATUS"
+                SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("HELLO_ACK", {
+                    frame.requestId, "1", CapabilityList
                 }));
+                SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("CAPABILITIES", {
+                    frame.requestId, "1", CapabilityList
+                }));
+                // Keep individual frames as a recovery path for clients which
+                // receive a malformed or dropped aggregate addon payload.
+                for (char const* capability : CapabilityNames)
+                    SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("CAPABILITY", {
+                        frame.requestId, capability
+                    }));
                 return true;
             }
             if (opcode == "SET_CONFIG" && frame.fields.size() >= 2)
@@ -121,28 +141,46 @@ namespace Sbrpg::Runtime
             }
             if (opcode == "START" && frame.fields.size() >= 2)
             {
-                uint32 durationMinutes = 0;
-                if (frame.fields.size() >= 3 && !frame.fields[2].empty())
+                uint32 durationMinutes = 0, quantityGoal = 0;
+                auto parseBounded = [&frame](size_t index, uint32 maximum, uint32& value)
                 {
-                    char* end = nullptr;
-                    unsigned long const parsed = std::strtoul(frame.fields[2].c_str(), &end, 10);
-                    if (!end || *end != '\0' || parsed > 10080)
-                    {
-                        SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ERROR", { frame.requestId, "DURATION_MUST_BE_0_TO_10080_MINUTES" }));
+                    if (frame.fields.size() <= index || frame.fields[index].empty())
                         return true;
-                    }
-                    durationMinutes = static_cast<uint32>(parsed);
+                    char* end = nullptr;
+                    unsigned long const parsed = std::strtoul(frame.fields[index].c_str(), &end, 10);
+                    if (!end || *end != '\0' || parsed > maximum)
+                        return false;
+                    value = static_cast<uint32>(parsed);
+                    return true;
+                };
+                if (!parseBounded(2, 10080, durationMinutes))
+                {
+                    SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ERROR", { frame.requestId, "DURATION_MUST_BE_0_TO_10080_MINUTES" }));
+                    return true;
+                }
+                if (!parseBounded(3, 999999, quantityGoal))
+                {
+                    SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ERROR", { frame.requestId, "QUANTITY_MUST_BE_0_TO_999999" }));
+                    return true;
                 }
                 std::string error;
-                if (!ConfigureFarm(player, frame.fields[0], frame.fields[1], durationMinutes, &error))
+                if (!ConfigureFarm(player, frame.fields[0], frame.fields[1], durationMinutes, quantityGoal, &error))
                     SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ERROR", { frame.requestId, error }));
                 else
                     SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ACK", { frame.requestId, opcode }));
             }
-            else if (opcode == "STOP")
+            else if (opcode == "STOP" || opcode == "FORCE_STOP")
             {
-                Sbrpg::Stop(player);
-                RequestMaterialStop(player);
+                if (opcode == "FORCE_STOP")
+                {
+                    Sbrpg::ForceStop(player);
+                    ForceStopMaterial(player);
+                }
+                else
+                {
+                    Sbrpg::Stop(player);
+                    RequestMaterialStop(player);
+                }
                 SendAddon(player, ReplyChatType(type), Sbrpg::Protocol::Build("ACK", { frame.requestId, opcode }));
             }
             else if (opcode == "MATERIAL_STATUS")

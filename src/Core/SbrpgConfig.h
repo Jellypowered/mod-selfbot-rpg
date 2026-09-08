@@ -7,6 +7,10 @@ namespace Sbrpg::Runtime
     {
         bool enable = true;
         bool debug = false;
+        bool returnHomeOnStop = true;
+        bool dangerScreening = false;
+        bool adaptiveOrdering = false;
+        uint32 policyRevision = 1;
         float materialMinimumChance = 1.0f;
         uint32 materialReservedBagPercent = 0;
         uint32 attemptsBeforeBlacklist = 3;

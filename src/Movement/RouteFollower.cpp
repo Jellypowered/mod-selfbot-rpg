@@ -1,4 +1,6 @@
 #include "RouteFollower.h"
+#include "Core/SbrpgConfig.h"
+#include "Safety/DangerEvaluator.h"
 
 #include "MotionMaster.h"
 #include "MovementGenerator.h"
@@ -29,6 +31,32 @@ namespace Sbrpg
         G3D::Vector3 destination = points.empty() ? path.GetActualEndPosition() : points.back();
         if (!points.empty())
             step.corridor = points;
+        if (Runtime::runtimeSettings.dangerScreening && step.corridor.size() > 1)
+        {
+            // Bound issued geometry without inventing shortcuts. Interpolate
+            // only along an existing validated mmap edge.
+            Movement::PointsArray bounded;
+            bounded.push_back(step.corridor.front());
+            float remaining = 25.0f;
+            for (size_t i = 1; i < step.corridor.size(); ++i)
+            {
+                G3D::Vector3 const previous = bounded.back();
+                G3D::Vector3 const& next = step.corridor[i];
+                float const dx = next.x - previous.x, dy = next.y - previous.y, dz = next.z - previous.z;
+                float const length = std::sqrt(dx * dx + dy * dy + dz * dz);
+                if (length > remaining)
+                {
+                    float const fraction = remaining / length;
+                    bounded.emplace_back(previous.x + dx * fraction, previous.y + dy * fraction, previous.z + dz * fraction);
+                    break;
+                }
+                bounded.push_back(step.corridor[i]);
+                remaining -= length;
+                if (remaining <= 0.0f) break;
+            }
+            step.corridor = std::move(bounded);
+            destination = step.corridor.back();
+        }
         step.x = destination.x;
         step.y = destination.y;
         step.z = destination.z;
@@ -71,6 +99,7 @@ namespace Sbrpg
     {
         if (!bot || step.corridor.size() < 2 || !bot->GetMotionMaster())
             return false;
+        if (!Safety::DangerEvaluator::AllowsSegment(bot, step.x, step.y, step.z)) return false;
         Movement::PointsArray corridor = step.corridor;
         // MoveSplinePath overwrites element zero with the live position.
         bot->GetMotionMaster()->MoveSplinePath(&corridor, FORCED_MOVEMENT_NONE);

@@ -13,6 +13,7 @@ namespace Sbrpg
                uint32 quantityGoal = 0);
     void Finish(Player* player, std::string reason);
     void Stop(Player* player);
+    void ForceStop(Player* player);
     FarmState const* Get(Player* player);
     std::string Status(Player* player);
     bool IsActive(Player* player);

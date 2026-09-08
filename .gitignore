@@ -6,8 +6,10 @@
 
 # Local checkout symlink to the standalone addon repository
 /addon/SelfBotRPG
-plan3.md
-plan4.md
+/plans/*.*
+/tests/*.*
+/docs/adaptive-farming.md
+/docs/status-reporting.md
 
 .directory
 .mailmap

@@ -6,8 +6,12 @@ namespace Sbrpg::Runtime
 {
     void LoadRuntimeSettings()
     {
+        ++runtimeSettings.policyRevision;
+        runtimeSettings.dangerScreening = sConfigMgr->GetOption<bool>("SelfBotRpg.DangerScreening", false);
+        runtimeSettings.adaptiveOrdering = sConfigMgr->GetOption<bool>("SelfBotRpg.AdaptiveOrdering", false);
         runtimeSettings.enable = sConfigMgr->GetOption<bool>("SelfBotRpg.Enable", true);
         runtimeSettings.debug = sConfigMgr->GetOption<bool>("SelfBotRpg.Debug", false);
+        runtimeSettings.returnHomeOnStop = sConfigMgr->GetOption<bool>("SelfBotRpg.ReturnHomeOnStop", true);
         runtimeSettings.materialMinimumChance = sConfigMgr->GetOption<float>("SelfBotRpg.MaterialMinimumChance", 1.0f);
         runtimeSettings.materialReservedBagPercent = sConfigMgr->GetOption<uint32>("SelfBotRpg.MaterialReservedBagPercent", 0);
         runtimeSettings.attemptsBeforeBlacklist = sConfigMgr->GetOption<uint32>("SelfBotRpg.AttemptsBeforeBlacklist", 3);
@@ -31,8 +35,15 @@ namespace Sbrpg::Runtime
     {
         try
         {
-            if (key == "enable") runtimeSettings.enable = std::stoul(value) != 0;
+            if (key == "dangerscreening" || key == "adaptiveordering")
+            {
+                if (value != "0" && value != "1") throw std::invalid_argument("boolean");
+                if (key == "dangerscreening") runtimeSettings.dangerScreening = value == "1";
+                else runtimeSettings.adaptiveOrdering = value == "1";
+            }
+            else if (key == "enable") runtimeSettings.enable = std::stoul(value) != 0;
             else if (key == "debug") runtimeSettings.debug = std::stoul(value) != 0;
+            else if (key == "returnhome") runtimeSettings.returnHomeOnStop = std::stoul(value) != 0;
             else if (key == "minchance")
             {
                 float v = std::stof(value); if (v < 0.0f || v > 100.0f) throw std::out_of_range("range");
@@ -88,6 +99,7 @@ namespace Sbrpg::Runtime
                 runtimeSettings.fishingCastDistance = v;
             }
             else { if (error) *error = "unknown runtime setting"; return false; }
+            ++runtimeSettings.policyRevision;
             runtimeSettingsLoaded = true;
             return true;
         }

@@ -2,6 +2,8 @@
 #include "Core/SbrpgConfig.h"
 #include "Core/SbrpgLogging.h"
 
+#include <unordered_map>
+
 namespace Sbrpg::Runtime
 {
     std::string FormatDuration(uint64 seconds)
@@ -23,8 +25,13 @@ namespace Sbrpg::Runtime
 
     void Debug(Player* bot, std::string const& message)
     {
-        if (!runtimeSettings.debug)
+        if (!runtimeSettings.debug || !bot)
             return;
+        static std::unordered_map<ObjectGuid, std::string> lastMessages;
+        auto const found = lastMessages.find(bot->GetGUID());
+        if (found != lastMessages.end() && found->second == message)
+            return;
+        lastMessages[bot->GetGUID()] = message;
         LOG_DEBUG("module", "[SBRPG] {}: {}", bot->GetName(), message);
         if (WorldSession* session = bot->GetSession())
             ChatHandler(session).PSendSysMessage("[SBRPG] {}", message);

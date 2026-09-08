@@ -39,6 +39,8 @@ namespace Sbrpg
         uint32_t lastStateChangeMs = 0;
         uint32_t lastActionMs = 0;
         uint32_t lootWaitSinceMs = 0;
+        uint32_t lastLootDebugMs = 0;
+        uint32_t combatPauseSinceMs = 0;
         std::string lastReason;
         ActivitySession session;
     };

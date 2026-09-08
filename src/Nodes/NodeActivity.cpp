@@ -6,6 +6,7 @@
 #include "Core/SbrpgLogging.h"
 #include "Movement/MountController.h"
 #include "Nodes/NodeActivity.h"
+#include "Safety/DangerEvaluator.h"
 
 namespace Sbrpg::Runtime
 {
@@ -22,12 +23,29 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
             mutableState.lastActionMs = actionNow;
             if (bot->IsInCombat())
             {
+                if (mutableState.combatPauseSinceMs == 0)
+                    mutableState.combatPauseSinceMs = actionNow;
                 mutableState.combatInterrupted = true;
                 SetPhase(mutableState, Sbrpg::FarmPhase::CombatPaused,
-                    mutableState.session.returnRequested ? "combat active; return-home objective retained" : "combat active; farm destination retained");
+                    mutableState.session.returnRequested ? "Combat started. Return home is paused." : "Combat started. Route paused.");
                 mutableState.step.valid = false;
                 mutableState.stepIssued = false;
                 return false;
+            }
+            if (mutableState.combatPauseSinceMs != 0)
+            {
+                uint32 const pausedMs = actionNow - mutableState.combatPauseSinceMs;
+                for (auto& entry : mutableState.blacklistedUntilMs)
+                    if (entry.second > mutableState.combatPauseSinceMs)
+                        entry.second += pausedMs;
+                for (auto& entry : mutableState.combatLootSinceMs)
+                    if (entry.second >= mutableState.combatPauseSinceMs)
+                        entry.second += pausedMs;
+                if (mutableState.gatherStartedMs >= mutableState.combatPauseSinceMs)
+                    mutableState.gatherStartedMs += pausedMs;
+                if (mutableState.pendingGatherSinceMs >= mutableState.combatPauseSinceMs)
+                    mutableState.pendingGatherSinceMs += pausedMs;
+                mutableState.combatPauseSinceMs = 0;
             }
             if (mutableState.combatInterrupted)
             {
@@ -38,11 +56,11 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                 mutableState.stuckChecks = 0;
                 if (bot->isMoving())
                     bot->StopMoving();
-                SetPhase(mutableState, Sbrpg::FarmPhase::Looting, "combat ended; checking nearby loot");
+                SetPhase(mutableState, Sbrpg::FarmPhase::Looting, "Combat ended. Checking nearby corpse loot.");
             }
             if (bot->isDead())
             {
-                SetPhase(mutableState, Sbrpg::FarmPhase::Waiting, "dead; waiting for recovery");
+                SetPhase(mutableState, Sbrpg::FarmPhase::Waiting, "Character is dead. Waiting for recovery.");
                 return false;
             }
             if (state->mapId != bot->GetMapId())
@@ -74,7 +92,7 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                     for (ObjectGuid const& guid : mutableState.liveCache.Guids())
                         AI_VALUE(LootObjectStack*, "available loot")->Remove(guid);
                     SetPhase(mutableState, Sbrpg::FarmPhase::Returning,
-                        mutableState.session.returnReason + "; returning to farm start");
+                        "Returning home: " + mutableState.session.returnReason);
                 }
             }
 
@@ -100,10 +118,10 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
             }
             if (spawn == 0 && !Sbrpg::NodeSelector::SelectNextRoute(bot, mutableState, spawn, x, y, z))
             {
-                SetPhase(mutableState, Sbrpg::FarmPhase::Waiting, "waiting for eligible route node");
+                SetPhase(mutableState, Sbrpg::FarmPhase::Waiting, "No usable node nearby. Moving to next route point.");
                 return true;
             }
-            SetPhase(mutableState, Sbrpg::FarmPhase::Travelling, "route objective retained");
+            SetPhase(mutableState, Sbrpg::FarmPhase::Travelling, "Travelling to next route node.");
 
             // Reaching a despawned node advances the circular route rather than
             // waiting at a single spawn forever. A later pass sees its respawn.
@@ -119,7 +137,7 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                 mutableState.currentSpawn = 0;
                 mutableState.targetSinceMs = 0;
                 mutableState.stuckChecks = 0;
-                SetPhase(mutableState, Sbrpg::FarmPhase::SelectingNode, "route node empty; replanning");
+                SetPhase(mutableState, Sbrpg::FarmPhase::SelectingNode, "Route node is empty. Temporarily skipping it.");
                 Debug(bot, Acore::StringFormat("spawn {} is empty; skipping it for {} seconds", spawn, blacklistSeconds));
                 return true;
             }
@@ -158,7 +176,7 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
 
             if (!mutableState.step.valid)
             {
-                SetPhase(mutableState, Sbrpg::FarmPhase::BuildingPath, "building mmap corridor");
+                SetPhase(mutableState, Sbrpg::FarmPhase::BuildingPath, "Finding a safe path to the route node.");
                 Sbrpg::RouteStep step;
                 if (!Sbrpg::BuildRouteStep(bot, x, y, z, step))
                 {
@@ -166,12 +184,12 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                     // off the navmesh. Normal no-path legs are blacklisted;
                     // recovery must never become a shortcut around geometry.
                     if ((step.type & PATHFIND_FARFROMPOLY) && Sbrpg::BuildRecoveryStep(bot, step))
-                        SetPhase(mutableState, Sbrpg::FarmPhase::Recovering, "off-navmesh; nudging onto corridor");
+                        SetPhase(mutableState, Sbrpg::FarmPhase::Recovering, "Path recovery: returning to the safe route.");
                     else
                     {
                         mutableState.blacklistedUntilMs[spawn] = now + 1000 * mutableState.failedBlacklistSeconds;
                         mutableState.currentSpawn = 0;
-                        SetPhase(mutableState, Sbrpg::FarmPhase::Failed, "route has no safe mmap segment");
+                        SetPhase(mutableState, Sbrpg::FarmPhase::Failed, "No safe path to route node. Skipping it.");
                         Debug(bot, Acore::StringFormat("spawn {} has no safe navigation segment", spawn));
                         return true;
                     }
@@ -187,7 +205,13 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                 mutableState.stepIssued = false;
                 return true;
             }
-            SetPhase(mutableState, Sbrpg::FarmPhase::Travelling, "following validated mmap segment");
+            SetPhase(mutableState, Sbrpg::FarmPhase::Travelling, "Travelling to route node.");
+            if (!Sbrpg::Safety::DangerEvaluator::AllowsSegment(bot, mutableState.step.x, mutableState.step.y, mutableState.step.z))
+            {
+                SetPhase(mutableState, Sbrpg::FarmPhase::Waiting, "Unsafe node approach. Waiting to replan.");
+                mutableState.step.valid = false;
+                return false;
+            }
             if (!PrepareTravelMove(bot))
                 return false;
             bool const issued = MoveTo(bot->GetMapId(), mutableState.step.x, mutableState.step.y, mutableState.step.z,
@@ -204,10 +228,10 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                     mutableState.blacklistedUntilMs[spawn] = now + 1000 * mutableState.failedBlacklistSeconds;
                     mutableState.currentSpawn = 0;
                     mutableState.stuckChecks = 0;
-                    SetPhase(mutableState, Sbrpg::FarmPhase::Failed, "playerbots rejected mmap movement; node skipped");
+                    SetPhase(mutableState, Sbrpg::FarmPhase::Failed, "Route movement failed. Node skipped.");
                 }
                 else
-                    SetPhase(mutableState, Sbrpg::FarmPhase::Recovering, "mmap movement was not issued; rebuilding");
+                    SetPhase(mutableState, Sbrpg::FarmPhase::Recovering, "Route movement retrying.");
             }
             return issued;
         }

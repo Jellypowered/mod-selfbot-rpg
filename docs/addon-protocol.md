@@ -17,7 +17,7 @@ JLYRPG2\t1\tMATERIAL_CATALOG\t<requestId>
 JLYRPG2\t1\tMATERIAL_SOURCES\t<requestId>\t<material>
 JLYRPG2\t1\tSTART_MATERIAL\t<requestId>\tmaterial\t<material>\t<durationMinutes>\t<quantity>
 JLYRPG2\t1\tSTART_FISHING\t<requestId>\t<fish|zone>\t<target>\t<durationMinutes>\t<quantity>\t<prioritizePools>\t<openWaterOnly>
-JLYRPG2\t1\tSTART\t<requestId>\t<mining|herbalism|both|zone>\t<resource>\t<durationMinutes>
+JLYRPG2\t1\tSTART\t<requestId>\t<mining|herbalism|both|zone>\t<resource>\t<durationMinutes>\t<quantity>
 JLYRPG2\t1\tSTOP\t<requestId>
 JLYRPG2\t1\tSTATUS\t<requestId>
 JLYRPG2\t1\tSET\t<requestId>\t<key>\t<value>
@@ -27,8 +27,9 @@ JLYRPG2\t1\tSET_CONFIG\t<requestId>\t<key>\t<value>
 ## Server → client
 
 ```text
-JLYRPG2\t1\tHELLO_ACK\t<requestId>\t1
+JLYRPG2\t1\tHELLO_ACK\t<requestId>\t1\t<comma-separated-capabilities>
 JLYRPG2\t1\tCAPABILITIES\t<requestId>\t1\t<comma-separated-capabilities>
+JLYRPG2\t1\tCAPABILITY\t<requestId>\t<capability>
 JLYRPG2\t1\tMATERIAL_CATALOG\t<requestId>\t<index>\t<total>\t<itemId>\t<key>\t<displayName>\t<family>\t<methods>
 JLYRPG2\t1\tMATERIAL_SOURCES_END\t<requestId>\t<total>
 JLYRPG2\t1\tMATERIAL_SOURCE\t<requestId>\t<index>\t<total>\t<creatureEntry>\t<method>\t<chance>\t<normal|quest>
@@ -39,7 +40,7 @@ JLYRPG2\t1\tSTATUS\t<active>\t<phase>\t<reason>\t<profession>\t<routeNodes>\t<ga
 JLYRPG2\t1\tSETTING\t<key>\t<value>
 ```
 
-`durationMinutes` is decimal `0` for unlimited or `1..10080`. `MATERIAL_STATUS` may include a trailing phase field; older clients safely ignore it. The addon settings window exposes the current `mod-selfbot-rpg.conf.dist` values through `SET_CONFIG`; values are validated and applied to the running module session, while the addon persists them in `SelfBotRPGDB.Settings`. `UseLures` is an optional best-effort fishing setting. `START_FISHING` supports selected-fish and current-zone modes; open-water casting is the default, while pool prioritization is opt-in and `openWaterOnly` disables pool routing. Start controls on the advertised `CAPABILITIES` set, preserves multi-word
+`durationMinutes` is decimal `0` for unlimited or `1..10080`. `quantity` is decimal `0` for unlimited or `1..999999`. For `START`, a nonzero quantity is valid only for one exact mining or herbalism resource; zone and `both` modes have no single inventory item to count. `MATERIAL_STATUS` may include a trailing phase field; older clients safely ignore it. `STOP` honors `SelfBotRpg.ReturnHomeOnStop`; `FORCE_STOP` is advertised when available and immediately clears SBRPG activity without returning home. Logout always force-clears module sessions. The addon settings window exposes the current `mod-selfbot-rpg.conf.dist` values through `SET_CONFIG`; values are validated and applied to the running module session, while the addon persists them in `SelfBotRPGDB.Settings`. Experimental `dangerscreening` and `adaptiveordering` controls are shown only when their matching capabilities are advertised. `UseLures` is an optional best-effort fishing setting. `START_FISHING` supports selected-fish and current-zone modes; open-water casting is the default, while pool prioritization is opt-in and `openWaterOnly` disables pool routing. Start controls on the advertised `CAPABILITIES` set, preserves multi-word
 resource names as one `START` field, and correlates catalog/source chunks by
 request ID and sequence/total fields. `MATERIAL_SOURCES_END` is sent even when
 the source set is empty, so the client can distinguish an empty result from an

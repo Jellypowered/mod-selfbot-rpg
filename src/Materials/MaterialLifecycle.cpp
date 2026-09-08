@@ -1,9 +1,11 @@
 #include "Integration/RuntimeDependencies.h"
 #include "Core/ActivityRegistry.h"
+#include "Core/SbrpgConfig.h"
 #include "Core/SbrpgLogging.h"
 #include "Fishing/FishingEquipment.h"
 #include "Integration/PlayerbotIntegration.h"
 #include "Materials/MaterialLifecycle.h"
+#include "Materials/MaterialStatus.h"
 
 namespace Sbrpg::Runtime
 {
@@ -14,8 +16,14 @@ namespace Sbrpg::Runtime
         auto it = ActivityRegistry::Materials().find(player->GetGUID());
         if (it == ActivityRegistry::Materials().end() || !it->second.active)
             return;
+        if (!runtimeSettings.returnHomeOnStop)
+        {
+            StopMaterial(player, "force stopped by user");
+            return;
+        }
         uint32 const now = getMSTime();
         Sbrpg::RequestActivityReturn(it->second.session, now, std::move(reason));
+        SetMaterialPhase(player, it->second, "Returning home: " + it->second.session.returnReason);
         it->second.returnNotified = true;
         // Preserve the current creature objective so combat can finish and its
         // corpse can still be looted/skinned before the return route begins.
@@ -25,6 +33,11 @@ namespace Sbrpg::Runtime
         if (WorldSession* session = player->GetSession())
             ChatHandler(session).PSendSysMessage("[SBRPG] Stop requested. Returning to the session start after active loot/combat.");
         Debug(player, "material stop requested; returning to session start");
+    }
+
+    void ForceStopMaterial(Player* player, std::string reason)
+    {
+        StopMaterial(player, std::move(reason));
     }
 
     void StopMaterial(Player* player, std::string reason)
@@ -42,6 +55,10 @@ namespace Sbrpg::Runtime
                 FormatDurationMs(elapsed), it->second.kills, it->second.gatheredItems, it->second.lootEvents,
                 it->second.corpseTimeouts, reason);
         }
+        bool const forced = reason == "force stopped by user" || reason == "logout";
+        SetMaterialPhase(player, it->second, forced ? "Force stopped. Activity cleared."
+            : Acore::StringFormat("Completed: {} kills, {} items, {} loot timeouts.",
+                it->second.kills, it->second.gatheredItems, it->second.corpseTimeouts));
         RestoreFishingEquipment(player, it->second);
         if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
         {

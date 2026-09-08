@@ -2,7 +2,10 @@
 #include "Core/ActivityRegistry.h"
 #include "Core/ActivityReturn.h"
 #include "Core/SbrpgLogging.h"
+#include "Core/SbrpgConfig.h"
 #include "Fishing/FishingEquipment.h"
+#include "Materials/MaterialStatus.h"
+#include "Materials/MaterialLifecycle.h"
 #include "Integration/PlayerScriptHandlers.h"
 #include "Protocol/ResponsePublisher.h"
 
@@ -11,7 +14,18 @@ namespace Sbrpg::Runtime
     class SelfbotRpgStatusScript final : public PlayerScript
     {
     public:
-        SelfbotRpgStatusScript() : PlayerScript("SelfbotRpgStatusScript", { PLAYERHOOK_ON_UPDATE }) { }
+        SelfbotRpgStatusScript() : PlayerScript("SelfbotRpgStatusScript", { PLAYERHOOK_ON_UPDATE, PLAYERHOOK_ON_LOGOUT }) { }
+
+        void OnPlayerLogout(Player* player) override
+        {
+            if (!player)
+                return;
+            Sbrpg::ForceStop(player);
+            ForceStopMaterial(player, "logout");
+            ActivityRegistry::PendingDisable().erase(player->GetGUID());
+            ActivityRegistry::Nodes().erase(player->GetGUID());
+            ActivityRegistry::Materials().erase(player->GetGUID());
+        }
 
         void OnPlayerUpdate(Player* player, uint32 /*diff*/) override
         {
@@ -39,6 +53,9 @@ namespace Sbrpg::Runtime
                 {
                     uint32 const gained = current - materialIt->second.inventoryCount;
                     materialIt->second.gatheredItems += gained;
+                    ++materialIt->second.statusRevision;
+                    if (runtimeSettings.adaptiveOrdering && materialIt->second.hotspotIndex < materialIt->second.hotspots.size())
+                        materialIt->second.hotspotEvidence.Observe(materialIt->second.hotspots[materialIt->second.hotspotIndex].id, true, now);
                     Debug(player, Acore::StringFormat("fishing inventory gain: {} cataloged fish (total {})",
                         gained, materialIt->second.gatheredItems));
                     if (materialIt->second.quantityGoal != 0 &&
@@ -46,19 +63,10 @@ namespace Sbrpg::Runtime
                         Sbrpg::RequestActivityReturn(materialIt->second.session, getMSTime(), "fish quantity goal reached");
                 }
                 materialIt->second.inventoryCount = current;
-                if (now - materialIt->second.lastAddonStatusMs >= 2000)
-                {
-                    materialIt->second.lastAddonStatusMs = now;
-                    SendAddon(player, CHAT_MSG_WHISPER, Sbrpg::Protocol::Build("MATERIAL_STATUS", {
-                        "0", "1", std::to_string(materialIt->second.itemId),
-                        std::to_string(materialIt->second.gatheredItems),
-                        std::to_string(materialIt->second.quantityGoal),
-                        std::to_string(materialIt->second.kills),
-                        std::to_string(Sbrpg::ActivityRemainingSeconds(materialIt->second.session, now)),
-                        materialIt->second.harvestSkills.empty() ? "0" : "1",
-                        materialIt->second.phase
-                    }));
-                }
+                bool const changed = materialIt->second.lastPublishedStatusRevision != materialIt->second.statusRevision;
+                bool const longWait = now - materialIt->second.lastStatusPublishMs >= 10000;
+                if (changed || longWait)
+                    PublishMaterialStatus(player, materialIt->second, longWait);
             }
             UpdateMaterialReturn(player);
 
@@ -75,8 +83,9 @@ namespace Sbrpg::Runtime
                     it->second.gatheredItems >= it->second.quantityGoal)
                     Sbrpg::RequestActivityReturn(it->second.session, getMSTime(), "quantity goal reached");
             }
-            if (it->second.revision != it->second.lastPublishedRevision ||
-                (it->second.session.durationMs != 0 && now - it->second.lastStatusPublishMs >= 5000))
+            bool const changed = it->second.revision != it->second.lastPublishedRevision;
+            bool const longWait = now - it->second.lastStatusPublishMs >= 10000;
+            if (changed || longWait)
                 PublishStatus(player);
         }
     };

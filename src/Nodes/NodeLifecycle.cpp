@@ -76,6 +76,8 @@ namespace Sbrpg
         state.routeIndex = 0;
         state.route = Sbrpg::BuildRoutePlan(std::move(state.route), player->GetPositionX(),
                                              player->GetPositionY(), player->GetPositionZ());
+        SetPhase(state, FarmPhase::Planning, Acore::StringFormat("{}. {} route loaded: {} nearby node spawns.",
+            enabledBySbrpg ? "Selfbot enabled" : "Selfbot already active", ProfessionName(profession), state.route.size()));
         ai = GET_PLAYERBOT_AI(player);
         state.lootStrategy.SetStrategy("loot");
         state.lootStrategy.Acquire(ai);
@@ -93,7 +95,31 @@ namespace Sbrpg
         if (it == ActivityRegistry::Nodes().end()) return;
         FarmState& state = it->second;
         bool const disableSelfBot = state.selfBotEnabledBySbrpg;
-        Transition(state, FarmPhase::Stopped, std::move(reason));
+        std::string const completedReason = Acore::StringFormat("Completed: {} gathers, {} items. {}",
+            state.harvested, state.gatheredItems, reason);
+        Transition(state, FarmPhase::Stopped, completedReason);
+        state.active = false;
+        player->StopMoving();
+        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
+        {
+            ai->ChangeStrategy("-sbrpg farm", BOT_STATE_NON_COMBAT);
+            state.mountStrategy.Release(ai);
+            state.lootStrategy.Release(ai);
+            state.gatherStrategy.Release(ai);
+        }
+        PublishStatus(player);
+        DisableOwnedSelfBot(player, disableSelfBot);
+    }
+
+    void ForceStop(Player* player)
+    {
+        if (!player) return;
+        auto it = ActivityRegistry::Nodes().find(player->GetGUID());
+        if (it == ActivityRegistry::Nodes().end() || !it->second.active)
+            return;
+        FarmState& state = it->second;
+        bool const disableSelfBot = state.selfBotEnabledBySbrpg;
+        Transition(state, FarmPhase::Stopped, "Force stopped by user.");
         state.active = false;
         player->StopMoving();
         if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
@@ -117,6 +143,11 @@ namespace Sbrpg
         FarmState& state = it->second;
         if (!state.active)
             return;
+        if (!runtimeSettings.returnHomeOnStop)
+        {
+            ForceStop(player);
+            return;
+        }
 
         // Stop cancels new farming objectives but keeps the module state alive
         // until the bounded return route reaches the recorded session start.
@@ -135,7 +166,7 @@ namespace Sbrpg
             state.gatherStrategy.Suspend(ai);
             ai->ChangeStrategy("+sbrpg farm", BOT_STATE_NON_COMBAT);
         }
-        SetPhase(state, FarmPhase::Returning, "stopped by user; returning to farm start");
+        SetPhase(state, FarmPhase::Returning, "Returning home: stopped by user.");
         PublishStatus(player);
     }
     FarmState const* Get(Player* player)

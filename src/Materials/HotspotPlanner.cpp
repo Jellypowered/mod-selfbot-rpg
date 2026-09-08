@@ -112,11 +112,12 @@ namespace Sbrpg::Materials
         if (!player)
             return hotspots;
 
+        // Do not path-probe every hotspot from the starting position. A
+        // distant but valid Westfall cluster can be marked unreachable simply
+        // because one PathGenerator probe cannot span the whole zone. Each
+        // movement leg is validated when it is actually traversed.
         for (Hotspot& hotspot : hotspots)
-        {
-            RouteStep step;
-            hotspot.reachable = BuildRouteStep(player, hotspot.x, hotspot.y, hotspot.z, step);
-        }
+            hotspot.reachable = true;
 
         std::vector<Hotspot> planned;
         planned.reserve(hotspots.size());

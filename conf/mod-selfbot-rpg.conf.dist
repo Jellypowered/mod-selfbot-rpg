@@ -12,6 +12,7 @@ SelfBotRpg.Enable = 1
 # Print route decisions to the self-bot's system chat and the worldserver debug
 # log. Useful for diagnosing unreachable or respawning nodes.
 SelfBotRpg.Debug = 0
+SelfBotRpg.ReturnHomeOnStop = 1
 
 # Minimum normal-loot chance (%) for proactive material targets. This excludes
 # technically valid but negligible world-loot sources such as Mangy Wolf Linen
@@ -69,3 +70,12 @@ SelfBotRpg.FishingSearchDistance = 500.0
 # 12 is a bit far, and may have some failed casts. In personal testing I found 8 to be
 # sufficent but i'd like more feedback.
 SelfBotRpg.FishingCastDistance = 12.0
+
+# Experimental local danger screening. Defaults off to preserve beta behavior.
+# Ordinary gray creatures are excluded from pack density; elites never are.
+# May pause returns when no locally safe approach is found. No automatic flee.
+SelfBotRpg.DangerScreening = 0
+
+# Experimental live-node ordering using bounded, session-local failure evidence.
+# Does not yet implement material-hotspot or fishing-yield learning.
+SelfBotRpg.AdaptiveOrdering = 0

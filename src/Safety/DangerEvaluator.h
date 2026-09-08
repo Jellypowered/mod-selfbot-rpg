@@ -1,6 +1,8 @@
 #pragma once
 #include "Core/FeatureAvailability.h"
 #include <cstdint>
+#include "Safety/DangerPolicy.h"
+class Player;
 namespace Sbrpg::Safety
 {
 enum class DangerState { Unknown, Safe, Dangerous, NeedsRecheck };
@@ -10,10 +12,13 @@ struct DangerAssessment
     uint32_t hostileCount = 0;
     int32_t maximumLevelDelta = 0;
 };
-// Unimplemented: Unknown is not permission to move. No runtime call sites yet.
+// Local preemptive snapshot; never authorizes combat or replaces mmap checks.
 class DangerEvaluator
 {
 public:
     static FeatureAvailability Availability();
+    static Risk Evaluate(Player* player, float x, float y, float z);
+    static bool Allows(Player* player, float x, float y, float z);
+    static bool AllowsSegment(Player* player, float x, float y, float z);
 };
 }

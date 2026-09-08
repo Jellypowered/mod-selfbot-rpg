@@ -4,5 +4,5 @@
 namespace Sbrpg::Runtime
 {
 bool ConfigureFarm(Player* player, std::string const& professionText, std::string const& entries,
-                       uint32 durationMinutes, std::string* error);
+                       uint32 durationMinutes, uint32 quantityGoal, std::string* error);
 }

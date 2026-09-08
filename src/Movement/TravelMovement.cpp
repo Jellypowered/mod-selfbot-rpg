@@ -1,11 +1,13 @@
 #include "Integration/RuntimeDependencies.h"
 #include "Movement/MountController.h"
 #include "Movement/TravelMovement.h"
+#include "Safety/DangerEvaluator.h"
 
 namespace Sbrpg::Runtime
 {
 bool SelfbotMaterialTravel::MoveToHotspot(uint32 mapId, float x, float y, float z)
 {
+            if (!Sbrpg::Safety::DangerEvaluator::AllowsSegment(bot, x, y, z)) return false;
             if (!PrepareTravelMove(bot))
                 return false;
             return MoveTo(mapId, x, y, z, false, false, false, false,

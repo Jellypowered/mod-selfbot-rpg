@@ -19,6 +19,7 @@ namespace Sbrpg::Runtime
                 { "material", HandleMaterial, SEC_PLAYER, Console::No },
                 { "mstatus", HandleMaterialStatus, SEC_PLAYER, Console::No },
                 { "stop", HandleStop, SEC_PLAYER, Console::No },
+                { "force-stop", HandleForceStop, SEC_PLAYER, Console::No },
                 { "status", HandleStatus, SEC_PLAYER, Console::No },
                 { "set", HandleSet, SEC_PLAYER, Console::No },
             };
@@ -31,7 +32,7 @@ namespace Sbrpg::Runtime
             std::istringstream input{std::string(args)}; std::string profession, entries;
             input >> profession; std::getline(input, entries);
             std::string error;
-            if (!ConfigureFarm(player, profession, entries, 0, &error))
+            if (!ConfigureFarm(player, profession, entries, 0, 0, &error))
             {
                 handler->PSendSysMessage("SelfBot RPG farm start failed: {}", error);
                 handler->SendSysMessage("Usage: .sbrpg farm <mining|herbalism> <resource>; `.sbrpg farm zone mining`; or `.sbrpg farm both zone`.");
@@ -211,6 +212,14 @@ namespace Sbrpg::Runtime
             Sbrpg::Stop(p);
             RequestMaterialStop(p);
             handler->SendSysMessage("SelfBot RPG stop requested; returning to the session start.");
+            return true;
+        }
+        static bool HandleForceStop(ChatHandler* handler, Tail /*args*/)
+        {
+            Player* p = handler->GetSession()->GetPlayer();
+            Sbrpg::ForceStop(p);
+            ForceStopMaterial(p);
+            handler->SendSysMessage("SelfBot RPG force-stopped; activity and module-owned state cleared without returning home.");
             return true;
         }
         static bool HandleStatus(ChatHandler* handler)

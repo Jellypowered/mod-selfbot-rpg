@@ -4,6 +4,7 @@
 #include "Fishing/FishingStart.h"
 #include "Integration/PlayerbotIntegration.h"
 #include "Materials/MaterialSourceSelector.h"
+#include "Materials/MaterialStatus.h"
 #include "Materials/MaterialStart.h"
 #include "Nodes/NodeResources.h"
 #include "Safety/EligibilityPolicy.h"
@@ -116,7 +117,7 @@ namespace Sbrpg::Runtime
 
         std::vector<Sbrpg::Materials::Hotspot> hotspots =
             Sbrpg::Materials::HotspotPlanner::Build(
-                Sbrpg::Materials::CreatureSpawnRepository::Load(player, sourceEntries));
+                Sbrpg::Materials::CreatureSpawnRepository::Load(player, sourceEntries, runtimeSettings.stayInCurrentZone));
         hotspots = Sbrpg::Materials::HotspotPlanner::Plan(player, std::move(hotspots));
         if (hotspots.empty())
         { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "No reachable creature hotspots found in the current zone."; return false; }
@@ -136,6 +137,7 @@ namespace Sbrpg::Runtime
         state.needsSkinning = std::find(harvestSkills.begin(), harvestSkills.end(), SKILL_SKINNING) != harvestSkills.end();
         state.harvestSkills = std::move(harvestSkills);
         state.hotspots = std::move(hotspots);
+        SetMaterialPhase(player, state, Acore::StringFormat("Material route loaded: {} nearby hotspots.", state.hotspots.size()));
         state.previousLootStrategy = ai->GetAiObjectContext()->GetValue<LootStrategy*>("loot strategy")->Get()->GetName();
         state.lootStrategy.SetStrategy("loot");
         // Ensure stock loot exists even when selfbot was just enabled; the

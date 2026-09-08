@@ -1,4 +1,5 @@
 #include "Awareness/LiveNodeAssociation.h"
+#include "Core/SbrpgConfig.h"
 
 #include "DatabaseEnv.h"
 #include "GameObject.h"
@@ -41,6 +42,30 @@ namespace Sbrpg
             observation.selectable = !go->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE);
             nodes.push_back(observation);
         }
+        // Cell visitation order is not a routing policy. Keep the local live
+        // list nearest-first so a farther node cannot consume the stock-gather
+        // claim window while a closer visible node is available. Spawn ID and
+        // entry make equal-distance ordering deterministic; GUID is only a
+        // final tie-breaker for dynamic/unspawned records without a spawn ID.
+        uint32 const scoreTime = getMSTime();
+        std::stable_sort(nodes.begin(), nodes.end(), [player, &state, scoreTime](LiveNodeObservation const& left, LiveNodeObservation const& right)
+        {
+            float const leftDistance = player->GetExactDist(left.x, left.y, left.z);
+            float const rightDistance = player->GetExactDist(right.x, right.y, right.z);
+            uint32 const now = scoreTime;
+            float const leftCost = Runtime::runtimeSettings.adaptiveOrdering ?
+                state.routeEvidence.Cost(left.spawn, leftDistance, left.z - player->GetPositionZ(), now) : leftDistance;
+            float const rightCost = Runtime::runtimeSettings.adaptiveOrdering ?
+                state.routeEvidence.Cost(right.spawn, rightDistance, right.z - player->GetPositionZ(), now) : rightDistance;
+            // An epsilon comparator is not transitive and violates sort's contract.
+            if (leftCost != rightCost)
+                return leftCost < rightCost;
+            if (left.spawn != right.spawn)
+                return left.spawn < right.spawn;
+            if (left.entry != right.entry)
+                return left.entry < right.entry;
+            return left.guid.GetCounter() < right.guid.GetCounter();
+        });
         return nodes;
     }
 

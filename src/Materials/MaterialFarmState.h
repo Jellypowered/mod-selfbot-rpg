@@ -2,6 +2,7 @@
 #define SELFBOTRPG_MATERIAL_FARM_STATE_H
 
 #include "Activity/ActivityState.h"
+#include "Awareness/AdaptiveEvidence.h"
 #include "Fishing/FishingTypes.h"
 #include "Movement/RouteFollower.h"
 #include "Integration/StrategyLease.h"
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace Sbrpg::Materials
 {
@@ -35,6 +37,9 @@ namespace Sbrpg::Materials
         std::vector<SkillType> harvestSkills;
         std::vector<Hotspot> hotspots;
         std::size_t hotspotIndex = 0;
+        Awareness::AdaptiveEvidence hotspotEvidence;
+        uint32_t policyRevision = 0;
+        std::unordered_map<uint32_t, uint32_t> dangerCooldowns;
         RouteStep hotspotStep;
         uint32_t hotspotStepBuiltMs = 0;
         uint32_t hotspotProgressMs = 0;
@@ -53,6 +58,10 @@ namespace Sbrpg::Materials
         uint8_t returnStalls = 0;
         std::string phase = "farming";
         uint32_t lastActionMs = 0;
+        uint32_t combatPauseSinceMs = 0;
+        uint32_t statusRevision = 0;
+        uint32_t lastPublishedStatusRevision = 0;
+        uint32_t lastStatusPublishMs = 0;
         bool returnNotified = false;
         StrategyLease lootStrategy;
         StrategyLease materialLootStrategy;

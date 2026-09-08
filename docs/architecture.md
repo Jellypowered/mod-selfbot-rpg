@@ -7,13 +7,13 @@ This is a behavior-preserving extraction of baseline `2655c3b0cf55f1809b8e081858
 - `SBRPG.cpp`: script registration only. `SBRPG.h`: compatibility API.
 - `Core/`: registry storage, configuration, logging, activity transitions and return requests. Registry access remains world-thread-only; no worker threads were introduced.
 - `Nodes/`: node state, database candidates, resource resolution, live-first selection, lifecycle, controller and interaction handling.
-- `Awareness/`: loaded-object observations, cache and stable spawn association. Observations retain GUIDs, not persistent world-object pointers.
+- `Awareness/`: loaded-object observations, cache and stable spawn association. Observations retain GUIDs, not persistent world-object pointers; matching live nodes are ordered nearest-first with stable spawn/entry/GUID tie-breakers before stock gathering is offered.
 - `Movement/`: bounded path planning/following, travel movement, mount selection/fallback and return movement.
 - `Materials/`: catalog, loot sources, hotspots, lifecycle and creature-farming action.
 - `Fishing/`: source queries, equipment, state, startup and fishing controller. Fishing reuses shared travel movement rather than the creature attack controller.
 - `Combat/`: recovery and target eligibility. Stock playerbots still owns execution of combat.
 - `Loot/`: item/kill events and stock node-loot recovery. No dependency on junk-to-gold headers or symbols.
-- `Safety/`: existing eligibility checks; future danger/blacklist contracts are explicitly unavailable.
+- `Safety/`: existing eligibility checks plus opt-in bounded local danger screening. It never owns combat, loot, flee, or emergency AoE movement; incomplete/distant observations fail closed.
 - `Protocol/`: existing codec/negotiation/status, request handling/configuration, response publication.
 - `Integration/`: playerbot ownership, strategy leases, action registration, player/world hooks and command adapter. `RuntimeDependencies.h` is a private implementation-only SDK import bundle, not a public service or state container.
 - `Reputation/`, `Questing/`, `Travel/`: future request types and unavailable service skeletons. Travel here means future multi-stage transport, not current local movement.
@@ -24,7 +24,7 @@ Fishing fields retain their names and defaults in a `FishingState` base of `Mate
 
 ## Unimplemented features
 
-Skeleton `Availability()` results always report `implemented=false` with an explicit reason. They have no script registration, protocol advertisement, timers, queries, movement, or stock strategy changes. Danger results default to `Unknown`, not `Safe`. Adaptive scoring, new danger screening/blacklists, reputation farming, quest automation, and transport routing remain future work. Existing node blacklists and existing fishing behavior are not replaced by these skeletons.
+Reputation, Questing, and Travel skeleton `Availability()` results always report `implemented=false` with an explicit reason; they have no script registration, protocol advertisement, timers, queries, movement, or stock strategy changes. Opt-in local danger screening is the exception: incomplete or distant observations default to `Unknown`, not `Safe`, and it never owns combat, flee, loot, or stock emergency movement. Adaptive scoring and danger screening are partial opt-in beta policies only; reputation farming, quest automation, and transport routing remain future work. Existing node blacklists and existing fishing behavior are not replaced by these skeletons.
 
 ## Compatibility and verification
 
@@ -37,6 +37,7 @@ Required runtime regression checks after deployment:
 - Herb/mining live-first routes, missing nodes, reroutes and timed return.
 - Mount selection/fallback, cast waits, unavailable mounts, interaction dismounts.
 - Materials combat interruption, multiple corpses, skinning, stalled loot recovery, bag reserve and quantity/timer completion.
+- Logout cleanup, configurable stop return-home behavior, and immediate force-stop without taking ownership of stock loot windows.
 - Fishing zone/item sources, pools/open water, lure/pole handling, reeling and equipment restoration.
 - Stop, death, map change, configuration disable and cleanup/strategy restoration.
 - Addon negotiation/settings/status and equivalent chat commands.

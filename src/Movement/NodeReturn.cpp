@@ -2,6 +2,7 @@
 #include "Core/ActivityLifecycle.h"
 #include "Movement/MountController.h"
 #include "Nodes/NodeActivity.h"
+#include "Safety/DangerEvaluator.h"
 
 namespace Sbrpg::Runtime
 {
@@ -11,11 +12,11 @@ bool SelfbotRpgFarmAction::ReturnHome(Sbrpg::FarmState& state, uint32 now)
             if (Sbrpg::IsAtActivityStart(state.session, bot, 5.0f))
             {
                 bot->SetFacingTo(state.session.startO);
-                Sbrpg::Finish(bot, state.session.returnReason + "; returned to farm start");
+                Sbrpg::Finish(bot, "Returned home: " + state.session.returnReason);
                 return true;
             }
 
-            SetPhase(state, Sbrpg::FarmPhase::Returning, state.session.returnReason + "; returning to farm start");
+            SetPhase(state, Sbrpg::FarmPhase::Returning, "Returning home: " + state.session.returnReason);
             if (state.targetSinceMs == 0)
             {
                 state.targetSinceMs = now;
@@ -34,7 +35,7 @@ bool SelfbotRpgFarmAction::ReturnHome(Sbrpg::FarmState& state, uint32 now)
                     state.step.valid = false;
                     state.stepIssued = false;
                     state.stuckChecks = 0;
-                    SetPhase(state, Sbrpg::FarmPhase::Recovering, "return-home route stalled; rebuilding");
+                    SetPhase(state, Sbrpg::FarmPhase::Recovering, "Return route stalled. Retrying safe path.");
                 }
             }
 
@@ -45,7 +46,7 @@ bool SelfbotRpgFarmAction::ReturnHome(Sbrpg::FarmState& state, uint32 now)
                 {
                     if (!((step.type & PATHFIND_FARFROMPOLY) && Sbrpg::BuildRecoveryStep(bot, step)))
                     {
-                        SetPhase(state, Sbrpg::FarmPhase::Recovering, "no safe mmap route home yet; retrying");
+                        SetPhase(state, Sbrpg::FarmPhase::Recovering, "No safe route home yet. Retrying.");
                         return false;
                     }
                 }
@@ -60,6 +61,12 @@ bool SelfbotRpgFarmAction::ReturnHome(Sbrpg::FarmState& state, uint32 now)
                 state.stepIssued = false;
                 return true;
             }
+            if (!Sbrpg::Safety::DangerEvaluator::AllowsSegment(bot, state.step.x, state.step.y, state.step.z))
+            {
+                SetPhase(state, Sbrpg::FarmPhase::Waiting, "danger on return route; movement withheld");
+                state.step.valid = false;
+                return false;
+            }
             if (!PrepareTravelMove(bot))
                 return false;
             bool const issued = MoveTo(bot->GetMapId(), state.step.x, state.step.y, state.step.z,
@@ -68,7 +75,7 @@ bool SelfbotRpgFarmAction::ReturnHome(Sbrpg::FarmState& state, uint32 now)
             {
                 state.step.valid = false;
                 state.stepIssued = false;
-                SetPhase(state, Sbrpg::FarmPhase::Recovering, "return-home movement was not issued; rebuilding");
+                SetPhase(state, Sbrpg::FarmPhase::Recovering, "Return movement retrying.");
             }
             return issued;
         }

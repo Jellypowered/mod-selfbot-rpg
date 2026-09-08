@@ -1,6 +1,7 @@
 #include "Integration/RuntimeDependencies.h"
 #include "Core/ActivityRegistry.h"
 #include "Core/SbrpgLogging.h"
+#include "Core/SbrpgConfig.h"
 #include "Loot/LootEvents.h"
 #include "Nodes/NodeResources.h"
 
@@ -40,13 +41,22 @@ namespace Sbrpg::Runtime
             // harvested again after respawn, so the GUID dedupe has a short
             // transaction window rather than lasting for the whole run.
             it->second.gatheredItems += count;
+            if (runtimeSettings.adaptiveOrdering)
+            {
+                if (GameObject* node = player->GetMap() ? player->GetMap()->GetGameObject(lootGuid) : nullptr)
+                {
+                    uint32 const spawn = node->GetSpawnId();
+                    if (spawn) it->second.routeEvidence.Observe(spawn, true, now);
+                }
+            }
             if (it->second.lastGatheredNode != lootGuid || now - it->second.lastGatheredMs >= 10000)
             {
                 ++it->second.harvested;
                 it->second.lastGatheredNode = lootGuid;
+                Debug(player, Acore::StringFormat("node gather item received: entry {}, count {}", lootGuid.GetEntry(), count));
+                Sbrpg::Transition(it->second, Sbrpg::FarmPhase::Looting, "Gather complete. Collecting loot.");
             }
             it->second.lastGatheredMs = now;
-            Sbrpg::Transition(it->second, Sbrpg::FarmPhase::Looting, "stock gather item looted");
         }
 
         void OnPlayerCreatureKill(Player* player, Creature* killed) override
