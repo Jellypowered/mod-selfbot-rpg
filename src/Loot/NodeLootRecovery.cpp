@@ -13,6 +13,22 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLoot(Sbrpg::FarmState& mutableSt
             LootObject stockLootTarget = AI_VALUE(LootObject, "loot target");
             if (!stockLootTarget.IsEmpty())
             {
+                if ((stockLootTarget.skillId == SKILL_MINING ||
+                     stockLootTarget.skillId == SKILL_HERBALISM) && bot->IsMounted())
+                {
+                    bot->Dismount();
+                    SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
+                        "Dismounting before gathering.");
+                    return false;
+                }
+                if (stockLootTarget.skillId == SKILL_MINING &&
+                    bot->GetShapeshiftForm() != FORM_NONE)
+                {
+                    botAI->RemoveShapeshift();
+                    SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
+                        "Leaving shapeshift before mining.");
+                    return false;
+                }
                 WorldObject* stockLootObject = stockLootTarget.GetWorldObject(bot);
                 bool const stockLootInRange = stockLootObject &&
                     bot->GetDistance(stockLootObject) <= sPlayerbotAIConfig.contactDistance + 0.5f;

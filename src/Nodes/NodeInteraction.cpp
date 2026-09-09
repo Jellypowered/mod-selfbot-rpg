@@ -215,6 +215,24 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLiveNodes(Sbrpg::FarmState& muta
                     Debug(bot, Acore::StringFormat("live node gather pending exhausted retries: spawn {}", go->GetSpawnId()));
                     continue;
                 }
+                if (bot->IsMounted())
+                {
+                    bot->Dismount();
+                    SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending,
+                        "Dismounting before gathering.");
+                    Debug(bot, "gathering node requires dismounted form; dismounting");
+                    return false;
+                }
+                bool const miningGather = mutableState.profession == Sbrpg::Profession::Mining ||
+                    mutableState.profession == Sbrpg::Profession::Both;
+                if (miningGather && bot->GetShapeshiftForm() != FORM_NONE)
+                {
+                    botAI->RemoveShapeshift();
+                    SetPhase(mutableState, Sbrpg::FarmPhase::GatherPending,
+                        "Leaving shapeshift before mining.");
+                    Debug(bot, "mining node requires humanoid form; removing shapeshift");
+                    return false;
+                }
                 if (stockTarget.guid == go->GetGUID())
                 {
                     setNodeObservation(go->GetGUID(), Sbrpg::NodeObservationState::Gathering);

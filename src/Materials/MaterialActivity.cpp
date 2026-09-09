@@ -137,6 +137,13 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
                     bool const corpseActionable = needsLoot || harvestReady;
                     if (corpseActionable)
                     {
+                        if (harvestReady && bot->IsMounted())
+                        {
+                            bot->Dismount();
+                            SetMaterialPhase(bot, state, "Dismounting before gathering.");
+                            Debug(bot, "corpse gathering requires dismounted form; dismounting");
+                            return false;
+                        }
                         if (state.corpseWaitSinceMs == 0)
                             state.corpseWaitSinceMs = now;
                         // Ranged kills commonly land outside the stock

@@ -45,7 +45,7 @@ namespace Sbrpg
         if (needsHerbalism && !hasHerbalism && profession == Profession::Herbalism)
         { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "Herbalism requires the Herbalism skill."; return false; }
         if (profession == Profession::Both && !hasMining && !hasHerbalism)
-        { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "Mining and Herbalism require at least one learned profession with its required tool."; return false; }
+        { DisableOwnedSelfBot(player, enabledBySbrpg); if (error) *error = "Mining and Herbalism require at least one learned gathering profession."; return false; }
         FarmState& state = ActivityRegistry::Nodes()[player->GetGUID()];
         state = FarmState();
         state.active = true;
@@ -83,6 +83,7 @@ namespace Sbrpg
         state.lootStrategy.Acquire(ai);
         state.gatherStrategy.SetStrategy("gather");
         state.gatherStrategy.Acquire(ai);
+        state.gatherStrategy.Suspend(ai);
         state.mountStrategy.SetStrategy("mount");
         state.mountStrategy.Acquire(ai);
         ai->ChangeStrategy("+sbrpg farm", BOT_STATE_NON_COMBAT);
