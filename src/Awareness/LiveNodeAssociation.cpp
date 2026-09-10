@@ -53,10 +53,16 @@ namespace Sbrpg
             float const leftDistance = player->GetExactDist(left.x, left.y, left.z);
             float const rightDistance = player->GetExactDist(right.x, right.y, right.z);
             uint32 const now = scoreTime;
+            uint32 const alternates = state.liveCache.Observations().size() > 0 ?
+                static_cast<uint32>(state.liveCache.Observations().size() - 1) : 0;
+            float const leftGeometry = state.pathGeometryCache.count(left.spawn) ?
+                Awareness::GeometryPenalty(state.pathGeometryCache.at(left.spawn), alternates) : 0.0f;
+            float const rightGeometry = state.pathGeometryCache.count(right.spawn) ?
+                Awareness::GeometryPenalty(state.pathGeometryCache.at(right.spawn), alternates) : 0.0f;
             float const leftCost = Runtime::runtimeSettings.adaptiveOrdering ?
-                state.routeEvidence.Cost(left.spawn, leftDistance, left.z - player->GetPositionZ(), now) : leftDistance;
+                state.routeEvidence.Cost(left.spawn, leftDistance, left.z - player->GetPositionZ(), now) + leftGeometry : leftDistance;
             float const rightCost = Runtime::runtimeSettings.adaptiveOrdering ?
-                state.routeEvidence.Cost(right.spawn, rightDistance, right.z - player->GetPositionZ(), now) : rightDistance;
+                state.routeEvidence.Cost(right.spawn, rightDistance, right.z - player->GetPositionZ(), now) + rightGeometry : rightDistance;
             // An epsilon comparator is not transitive and violates sort's contract.
             if (leftCost != rightCost)
                 return leftCost < rightCost;

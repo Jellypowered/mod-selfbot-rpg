@@ -99,7 +99,7 @@ namespace Sbrpg
     {
         if (!bot || step.corridor.size() < 2 || !bot->GetMotionMaster())
             return false;
-        if (!Safety::DangerEvaluator::AllowsSegment(bot, step.x, step.y, step.z)) return false;
+        if (!Safety::DangerEvaluator::AllowsCorridor(bot, step.corridor)) return false;
         Movement::PointsArray corridor = step.corridor;
         // MoveSplinePath overwrites element zero with the live position.
         bot->GetMotionMaster()->MoveSplinePath(&corridor, FORCED_MOVEMENT_NONE);

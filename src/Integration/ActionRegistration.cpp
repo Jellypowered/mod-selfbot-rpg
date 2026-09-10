@@ -5,6 +5,20 @@
 
 namespace Sbrpg::Runtime
 {
+    // Uses stock loot execution without its periodic broad `add all loot`
+    // scan. Node farming queues only SBRPG-selected gameobject GUIDs.
+    class SelfbotNodeLootStrategy : public Strategy
+    {
+    public:
+        explicit SelfbotNodeLootStrategy(PlayerbotAI* ai) : Strategy(ai) { }
+        std::string const getName() override { return "sbrpg node loot"; }
+        uint32 GetType() const override { return STRATEGY_TYPE_NONCOMBAT; }
+        std::vector<NextAction> getDefaultActions() override
+        {
+            return { NextAction("loot", 8.0f), NextAction("move to loot", 7.0f), NextAction("open loot", 9.0f) };
+        }
+    };
+
     class SelfbotMaterialLootStrategy : public Strategy
     {
     public:
@@ -61,11 +75,13 @@ namespace Sbrpg::Runtime
         {
             creators["sbrpg farm"] = &CreateFarm;
             creators["sbrpg material"] = &CreateMaterial;
+            creators["sbrpg node loot"] = &CreateNodeLoot;
             creators["sbrpg material loot"] = &CreateMaterialLoot;
         }
     private:
         static Strategy* CreateFarm(PlayerbotAI* ai) { return new SelfbotRpgFarmStrategy(ai); }
         static Strategy* CreateMaterial(PlayerbotAI* ai) { return new SelfbotRpgMaterialStrategy(ai); }
+        static Strategy* CreateNodeLoot(PlayerbotAI* ai) { return new SelfbotNodeLootStrategy(ai); }
         static Strategy* CreateMaterialLoot(PlayerbotAI* ai) { return new SelfbotMaterialLootStrategy(ai); }
     };
 

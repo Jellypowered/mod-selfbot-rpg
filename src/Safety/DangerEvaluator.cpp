@@ -68,6 +68,30 @@ bool DangerEvaluator::AllowsSegment(Player* player, float x, float y, float z)
     return true;
 }
 
+bool DangerEvaluator::AllowsCorridor(Player* player, Movement::PointsArray const& corridor)
+{
+    if (!Runtime::runtimeSettings.dangerScreening) return true;
+    // A preemptive policy must never take over emergency combat movement.
+    if (!player || player->IsInCombat() || corridor.size() < 2) return false;
+
+    for (size_t edge = 1; edge < corridor.size(); ++edge)
+    {
+        G3D::Vector3 const& from = corridor[edge - 1];
+        G3D::Vector3 const& to = corridor[edge];
+        float const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+        float const length = std::sqrt(dx * dx + dy * dy + dz * dz);
+        uint32_t const samples = std::max(1u, uint32_t(std::ceil(length / 3.0f)));
+        for (uint32_t sample = 0; sample <= samples; ++sample)
+        {
+            float const fraction = float(sample) / samples;
+            if (!Allows(player, from.x + dx * fraction, from.y + dy * fraction,
+                        from.z + dz * fraction))
+                return false;
+        }
+    }
+    return true;
+}
+
 bool DangerEvaluator::Allows(Player* player, float x, float y, float z)
 {
     if (!Runtime::runtimeSettings.dangerScreening) return true;

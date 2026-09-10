@@ -10,6 +10,7 @@
 #include "ObjectGuid.h"
 #include "Awareness/LiveNodeCache.h"
 #include "Awareness/AdaptiveEvidence.h"
+#include "Awareness/AdaptivePolicy.h"
 #include "Movement/RouteFollower.h"
 #include "Integration/StrategyLease.h"
 #include "Session/ActivitySession.h"
@@ -85,12 +86,13 @@ namespace Sbrpg
         uint32 pendingGatherSinceMs = 0;
         std::vector<RoutePoint> route;
         uint32 routeIndex = 0;
-        std::unordered_map<uint32, float> pathCostCache;
+        std::unordered_map<uint32, Awareness::GeometryAssessment> pathGeometryCache;
         uint32 lastRoutePlanMs = 0;
         LiveNodeCache liveCache;
         Awareness::AdaptiveEvidence routeEvidence;
         uint32 policyRevision = 0;
-        std::unordered_map<ObjectGuid, uint32> dangerCooldowns;
+        Awareness::CooldownBook adaptiveCooldowns;
+        uint32 committedSpawnSinceMs = 0;
         RouteStep step;
         bool stepIssued = false;
         uint32 stepBuiltMs = 0;

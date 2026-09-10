@@ -1,7 +1,9 @@
 #include "Integration/RuntimeDependencies.h"
 #include "Core/ActivityLifecycle.h"
+#include "Core/SbrpgConfig.h"
 #include "Core/SbrpgLogging.h"
 #include "Nodes/NodeActivity.h"
+#include "Nodes/NodeResources.h"
 namespace Sbrpg::Runtime
 {
 std::optional<bool> SelfbotRpgFarmAction::HandleLoot(Sbrpg::FarmState& mutableState, uint32 now)
@@ -48,6 +50,15 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLoot(Sbrpg::FarmState& mutableSt
                     MoveNear(stockLootObject, sPlayerbotAIConfig.contactDistance,
                         MovementPriority::MOVEMENT_NORMAL);
                 }
+                if (stockLootInRange && stockLootTarget.IsLootPossible(bot) &&
+                    bot->GetLootGUID().IsEmpty() && !bot->IsInCombat() &&
+                    !bot->IsNonMeleeSpellCast(true))
+                {
+                    // Stock OpenLootAction retains all interaction/cast/loot
+                    // ownership. SBRPG only invokes it for the exact-GUID
+                    // node-run wrapper, which intentionally omits broad scans.
+                    botAI->DoSpecificAction("open loot", Event(), true);
+                }
                 if ((!stockLootInRange && stockLootTarget.IsLootPossible(bot)) ||
                     !bot->GetLootGUID().IsEmpty() || bot->IsInCombat() ||
                     now - mutableState.lootWaitSinceMs < 10000)
@@ -93,8 +104,25 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLoot(Sbrpg::FarmState& mutableSt
             // stock strategy for opening and looting.
             if (AI_VALUE(bool, "has available loot"))
             {
-                LootObject pendingLoot = AI_VALUE(LootObjectStack*, "available loot")->GetLoot();
+                LootObjectStack* availableLoot = AI_VALUE(LootObjectStack*, "available loot");
+                LootObject pendingLoot = availableLoot->GetLoot();
                 WorldObject* pendingObject = pendingLoot.GetWorldObject(bot);
+                // The node controller never queues unrelated gameobjects. Drop
+                // a stale broad-loot entry before it can strand a targeted run
+                // on an herb/chest; selected/open stock loot above still has
+                // priority and is never replaced here.
+                if (GameObject* pendingGo = pendingObject ? pendingObject->ToGameObject() : nullptr)
+                {
+                    bool const selectedNode = HasEntry(mutableState, pendingGo->GetEntry());
+                    bool const eligibleChest = runtimeSettings.nodeChestLoot &&
+                        pendingGo->GetGoType() == GAMEOBJECT_TYPE_CHEST && pendingLoot.IsLootPossible(bot);
+                    if (!selectedNode && !eligibleChest)
+                    {
+                        availableLoot->Remove(pendingLoot.guid);
+                        Debug(bot, Acore::StringFormat("discarding unrelated node-run loot entry {}", pendingGo->GetEntry()));
+                        return std::nullopt;
+                    }
+                }
                 if (pendingObject && bot->GetDistance(pendingObject) > sPlayerbotAIConfig.contactDistance + 0.5f)
                 {
                     SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
@@ -112,6 +140,8 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLoot(Sbrpg::FarmState& mutableSt
                     }
                     return false;
                 }
+                if (pendingObject && !bot->IsNonMeleeSpellCast(true) && !bot->IsInCombat())
+                    botAI->DoSpecificAction("loot", Event(), true);
                 SetPhase(mutableState, Sbrpg::FarmPhase::Looting,
                     mutableState.session.returnRequested ? "Returning home after nearby loot." : "Waiting for playerbot loot to finish.");
                 return false;

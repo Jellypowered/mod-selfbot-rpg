@@ -9,6 +9,7 @@ namespace Sbrpg::Runtime
         ++runtimeSettings.policyRevision;
         runtimeSettings.dangerScreening = sConfigMgr->GetOption<bool>("SelfBotRpg.DangerScreening", false);
         runtimeSettings.adaptiveOrdering = sConfigMgr->GetOption<bool>("SelfBotRpg.AdaptiveOrdering", false);
+        runtimeSettings.nodeChestLoot = sConfigMgr->GetOption<bool>("SelfBotRpg.NodeChestLoot", false);
         runtimeSettings.enable = sConfigMgr->GetOption<bool>("SelfBotRpg.Enable", true);
         runtimeSettings.debug = sConfigMgr->GetOption<bool>("SelfBotRpg.Debug", false);
         runtimeSettings.returnHomeOnStop = sConfigMgr->GetOption<bool>("SelfBotRpg.ReturnHomeOnStop", true);
@@ -35,11 +36,12 @@ namespace Sbrpg::Runtime
     {
         try
         {
-            if (key == "dangerscreening" || key == "adaptiveordering")
+            if (key == "dangerscreening" || key == "adaptiveordering" || key == "nodechestloot")
             {
                 if (value != "0" && value != "1") throw std::invalid_argument("boolean");
                 if (key == "dangerscreening") runtimeSettings.dangerScreening = value == "1";
-                else runtimeSettings.adaptiveOrdering = value == "1";
+                else if (key == "adaptiveordering") runtimeSettings.adaptiveOrdering = value == "1";
+                else runtimeSettings.nodeChestLoot = value == "1";
             }
             else if (key == "enable") runtimeSettings.enable = std::stoul(value) != 0;
             else if (key == "debug") runtimeSettings.debug = std::stoul(value) != 0;

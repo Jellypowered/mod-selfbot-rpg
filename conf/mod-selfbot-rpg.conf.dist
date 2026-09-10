@@ -79,3 +79,8 @@ SelfBotRpg.DangerScreening = 0
 # Experimental live-node ordering using bounded, session-local failure evidence.
 # Does not yet implement material-hotspot or fishing-yield learning.
 SelfBotRpg.AdaptiveOrdering = 0
+
+# Allow node-farming runs to collect nearby chests that pass normal stock-loot
+# eligibility checks. Defaults off: resource-targeted runs otherwise hand off
+# only their selected mining/herbalism node GUIDs.
+SelfBotRpg.NodeChestLoot = 0

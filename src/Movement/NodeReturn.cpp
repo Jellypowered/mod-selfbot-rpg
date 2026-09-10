@@ -55,13 +55,22 @@ bool SelfbotRpgFarmAction::ReturnHome(Sbrpg::FarmState& state, uint32 now)
                 state.stepBuiltMs = now;
             }
 
+            if (bot->isMoving() || (bot->movespline && !bot->movespline->Finalized()))
+                return false;
             if (bot->GetExactDist(state.step.x, state.step.y, state.step.z) <= 2.0f)
             {
                 state.step.valid = false;
                 state.stepIssued = false;
                 return true;
             }
-            if (!Sbrpg::Safety::DangerEvaluator::AllowsSegment(bot, state.step.x, state.step.y, state.step.z))
+            if (state.stepIssued)
+            {
+                state.step.valid = false;
+                state.stepIssued = false;
+                SetPhase(state, Sbrpg::FarmPhase::Recovering, "Return segment ended short. Rebuilding safe path.");
+                return true;
+            }
+            if (!Sbrpg::Safety::DangerEvaluator::AllowsCorridor(bot, state.step.corridor))
             {
                 SetPhase(state, Sbrpg::FarmPhase::Waiting, "danger on return route; movement withheld");
                 state.step.valid = false;
@@ -69,8 +78,8 @@ bool SelfbotRpgFarmAction::ReturnHome(Sbrpg::FarmState& state, uint32 now)
             }
             if (!PrepareTravelMove(bot))
                 return false;
-            bool const issued = MoveTo(bot->GetMapId(), state.step.x, state.step.y, state.step.z,
-                                       false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
+            bool const issued = Sbrpg::FollowRouteStep(bot, state.step);
+            state.stepIssued = issued;
             if (!issued && !bot->isMoving() && now - state.stepBuiltMs >= 1000)
             {
                 state.step.valid = false;

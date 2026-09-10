@@ -38,6 +38,7 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                 for (auto& entry : mutableState.blacklistedUntilMs)
                     if (entry.second > mutableState.combatPauseSinceMs)
                         entry.second += pausedMs;
+                mutableState.adaptiveCooldowns.Pause(mutableState.combatPauseSinceMs, pausedMs);
                 for (auto& entry : mutableState.combatLootSinceMs)
                     if (entry.second >= mutableState.combatPauseSinceMs)
                         entry.second += pausedMs;
@@ -152,6 +153,7 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                 mutableState.step.valid = false;
                 mutableState.stepIssued = false;
                 mutableState.targetSinceMs = now;
+                mutableState.committedSpawnSinceMs = now;
                 mutableState.lastTargetDistance = distance;
                 mutableState.stuckChecks = 0;
             }
@@ -197,16 +199,48 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
                 mutableState.step = std::move(step);
                 mutableState.stepIssued = false;
                 mutableState.stepBuiltMs = now;
+                uint32 alternates = 0;
+                for (Sbrpg::RoutePoint const& point : mutableState.route)
+                    if (point.spawn != spawn && point.observation != Sbrpg::NodeObservationState::Unavailable &&
+                        !mutableState.blacklistedUntilMs.count(point.spawn))
+                        ++alternates;
+                Sbrpg::Awareness::GeometryAssessment const geometry = Sbrpg::Awareness::AssessGeometry(mutableState.step,
+                    bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                float const geometryPenalty = Sbrpg::Awareness::GeometryPenalty(geometry, alternates);
+                if (runtimeSettings.adaptiveOrdering &&
+                    (mutableState.pathGeometryCache.size() < 256 || mutableState.pathGeometryCache.count(spawn)))
+                    mutableState.pathGeometryCache[spawn] = geometry;
+                if (runtimeSettings.debug && (mutableState.lastAdaptiveDebugMs == 0 ||
+                    now - mutableState.lastAdaptiveDebugMs >= 5000))
+                {
+                    mutableState.lastAdaptiveDebugMs = now;
+                    Debug(bot, Acore::StringFormat("adaptive candidate: run {}, spawn {}, distance {:.1f}, geometry {:.1f} ({}), corridor {}, alternates {}, evidence {}",
+                        mutableState.runId, spawn, distance, geometryPenalty, Sbrpg::Awareness::GeometryClassName(geometry.kind),
+                        mutableState.step.corridor.size(), alternates, mutableState.routeEvidence.Size()));
+                }
             }
 
+            if (bot->isMoving() || (bot->movespline && !bot->movespline->Finalized()))
+                return false;
             if (bot->GetExactDist(mutableState.step.x, mutableState.step.y, mutableState.step.z) <= 2.0f)
             {
                 mutableState.step.valid = false;
                 mutableState.stepIssued = false;
                 return true;
             }
+            // A completed spline that missed its cached endpoint must be
+            // rebuilt from the live position. Never replace a committed mmap
+            // corridor with a fresh MoveTo endpoint while it is in progress:
+            // caves and partial paths can otherwise oscillate indefinitely.
+            if (mutableState.stepIssued)
+            {
+                mutableState.step.valid = false;
+                mutableState.stepIssued = false;
+                SetPhase(mutableState, Sbrpg::FarmPhase::Recovering, "Route segment ended short. Rebuilding safe path.");
+                return true;
+            }
             SetPhase(mutableState, Sbrpg::FarmPhase::Travelling, "Travelling to route node.");
-            if (!Sbrpg::Safety::DangerEvaluator::AllowsSegment(bot, mutableState.step.x, mutableState.step.y, mutableState.step.z))
+            if (!Sbrpg::Safety::DangerEvaluator::AllowsCorridor(bot, mutableState.step.corridor))
             {
                 SetPhase(mutableState, Sbrpg::FarmPhase::Waiting, "Unsafe node approach. Waiting to replan.");
                 mutableState.step.valid = false;
@@ -214,12 +248,11 @@ bool SelfbotRpgFarmAction::Execute(Event /*event*/)
             }
             if (!PrepareTravelMove(bot))
                 return false;
-            bool const issued = MoveTo(bot->GetMapId(), mutableState.step.x, mutableState.step.y, mutableState.step.z,
-                                       false, false, false, false, MovementPriority::MOVEMENT_NORMAL, true);
-            // A validated PathGenerator result is not proof that playerbots
-            // accepted the movement request (cooldowns, duplicate moves, and
-            // higher-priority generators can refuse it). Never present that as
-            // travelling forever: rebuild once, then blacklist the dead leg.
+            bool const issued = Sbrpg::FollowRouteStep(bot, mutableState.step);
+            mutableState.stepIssued = issued;
+            // A validated PathGenerator result is not proof that its spline
+            // was accepted. Never present that as travelling forever: rebuild
+            // once, then blacklist the dead leg.
             if (!issued && !bot->isMoving() && now - mutableState.stepBuiltMs >= 1000)
             {
                 mutableState.step.valid = false;

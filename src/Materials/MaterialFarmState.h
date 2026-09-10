@@ -3,6 +3,7 @@
 
 #include "Activity/ActivityState.h"
 #include "Awareness/AdaptiveEvidence.h"
+#include "Awareness/AdaptivePolicy.h"
 #include "Fishing/FishingTypes.h"
 #include "Movement/RouteFollower.h"
 #include "Integration/StrategyLease.h"
@@ -38,8 +39,10 @@ namespace Sbrpg::Materials
         std::vector<Hotspot> hotspots;
         std::size_t hotspotIndex = 0;
         Awareness::AdaptiveEvidence hotspotEvidence;
+        std::unordered_map<uint32_t, Awareness::GeometryAssessment> hotspotGeometry;
         uint32_t policyRevision = 0;
-        std::unordered_map<uint32_t, uint32_t> dangerCooldowns;
+        Awareness::CooldownBook adaptiveCooldowns;
+        uint32_t hotspotCommittedSinceMs = 0;
         RouteStep hotspotStep;
         uint32_t hotspotStepBuiltMs = 0;
         uint32_t hotspotProgressMs = 0;
@@ -49,6 +52,7 @@ namespace Sbrpg::Materials
         uint32_t targetSinceMs = 0;
         uint32_t corpseWaitSinceMs = 0;
         uint32_t lastCorpseDebugMs = 0;
+        uint32_t lastAdaptiveDebugMs = 0;
         uint32_t invalidLootSinceMs = 0;
         bool returnCombatCorpse = false;
         RouteStep returnStep;

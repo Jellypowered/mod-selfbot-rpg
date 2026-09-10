@@ -79,7 +79,10 @@ namespace Sbrpg
         SetPhase(state, FarmPhase::Planning, Acore::StringFormat("{}. {} route loaded: {} nearby node spawns.",
             enabledBySbrpg ? "Selfbot enabled" : "Selfbot already active", ProfessionName(profession), state.route.size()));
         ai = GET_PLAYERBOT_AI(player);
-        state.lootStrategy.SetStrategy("loot");
+        // The wrapper uses stock Loot/MoveToLoot/OpenLoot actions but omits
+        // stock `add all loot`, so a copper-only route cannot detour for
+        // unrelated herbs or gameobjects.
+        state.lootStrategy.SetStrategy("sbrpg node loot");
         state.lootStrategy.Acquire(ai);
         state.gatherStrategy.SetStrategy("gather");
         state.gatherStrategy.Acquire(ai);

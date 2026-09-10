@@ -3,25 +3,18 @@
 #include "Materials/MaterialLifecycle.h"
 #include "Materials/MaterialStatus.h"
 #include "Movement/TravelMovement.h"
+#include "Safety/DangerEvaluator.h"
 
 namespace Sbrpg::Runtime
 {
 bool SelfbotMaterialTravel::IssueBoundedMove(Sbrpg::RouteStep const& step)
 {
-            float moveX = 0.0f, moveY = 0.0f, moveZ = 0.0f;
-            bool found = false;
-            for (G3D::Vector3 const& point : step.corridor)
-            {
-                float const distance = bot->GetExactDist(point.x, point.y, point.z);
-                if (distance > 25.0f)
-                    break;
-                if (distance > 2.0f)
-                {
-                    moveX = point.x; moveY = point.y; moveZ = point.z;
-                    found = true;
-                }
-            }
-            return found && MoveToHotspot(bot->GetMapId(), moveX, moveY, moveZ);
+            // Follow the exact mmap corridor that was validated by
+            // BuildRouteStep. Re-requesting MoveTo for an intermediate point
+            // can replace a cave/partial-path spline with a conflicting route.
+            if (!Sbrpg::Safety::DangerEvaluator::AllowsCorridor(bot, step.corridor))
+                return false;
+            return Sbrpg::FollowRouteStep(bot, step);
         }
 
 bool SelfbotMaterialTravel::ReturnHome(Sbrpg::Materials::MaterialFarmState& state, uint32 now)

@@ -36,9 +36,7 @@ bool SelfbotMaterialAttackAction::Execute(Event /*event*/)
             else if (state.combatPauseSinceMs != 0)
             {
                 uint32 const pausedMs = now - state.combatPauseSinceMs;
-                for (auto& entry : state.dangerCooldowns)
-                    if (entry.second >= state.combatPauseSinceMs)
-                        entry.second += pausedMs;
+                state.adaptiveCooldowns.Pause(state.combatPauseSinceMs, pausedMs);
                 if (state.targetSinceMs >= state.combatPauseSinceMs)
                     state.targetSinceMs += pausedMs;
                 if (state.corpseWaitSinceMs >= state.combatPauseSinceMs)

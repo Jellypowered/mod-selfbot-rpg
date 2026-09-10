@@ -10,6 +10,7 @@ namespace Sbrpg::Runtime
         bool returnHomeOnStop = true;
         bool dangerScreening = false;
         bool adaptiveOrdering = false;
+        bool nodeChestLoot = false;
         uint32 policyRevision = 1;
         float materialMinimumChance = 1.0f;
         uint32 materialReservedBagPercent = 0;

@@ -7,6 +7,10 @@
 #include "Nodes/NodeResources.h"
 #include "Nodes/NodeActivity.h"
 #include "Safety/DangerEvaluator.h"
+#include "CellImpl.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "NearestGameObjects.h"
 namespace Sbrpg::Runtime
 {
 std::optional<bool> SelfbotRpgFarmAction::HandleLiveNodes(Sbrpg::FarmState& mutableState, uint32 now)
@@ -15,7 +19,9 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLiveNodes(Sbrpg::FarmState& muta
             if (mutableState.policyRevision != runtimeSettings.policyRevision)
             {
                 mutableState.routeEvidence.Clear();
-                mutableState.dangerCooldowns.clear();
+                mutableState.pathGeometryCache.clear();
+                mutableState.adaptiveCooldowns.Clear();
+                mutableState.committedSpawnSinceMs = 0;
                 mutableState.liveCache.Clear();
                 mutableState.policyRevision = runtimeSettings.policyRevision;
             }
@@ -37,6 +43,23 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLiveNodes(Sbrpg::FarmState& muta
                     (!mutableState.liveCache.Observations().empty() || liveScanAgeMs != 0))
                     Debug(bot, Acore::StringFormat("live node scan: {} observations, {}ms age",
                         mutableState.liveCache.Observations().size(), liveScanAgeMs));
+                if (runtimeSettings.nodeChestLoot)
+                {
+                    std::list<GameObject*> nearby;
+                    AnyGameObjectInObjectRangeCheck check(bot, liveScanRadius);
+                    Acore::GameObjectListSearcher<AnyGameObjectInObjectRangeCheck> searcher(bot, nearby, check);
+                    Cell::VisitObjects(bot, searcher, liveScanRadius);
+                    for (GameObject* chest : nearby)
+                    {
+                        if (!chest || !chest->IsInWorld() || !chest->isSpawned() ||
+                            chest->GetGoType() != GAMEOBJECT_TYPE_CHEST ||
+                            chest->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_NOT_SELECTABLE))
+                            continue;
+                        LootObject loot(bot, chest->GetGUID());
+                        if (loot.IsLootPossible(bot))
+                            AI_VALUE(LootObjectStack*, "available loot")->Add(chest->GetGUID());
+                    }
+                }
             }
             auto setNodeObservation = [&mutableState](ObjectGuid guid, Sbrpg::NodeObservationState observation)
             {
@@ -126,9 +149,7 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLiveNodes(Sbrpg::FarmState& muta
             }
 
             uint32 staleOrUnavailable = 0, professionOrLootBlocked = 0, temporarilyBlacklisted = 0;
-            for (auto it = mutableState.dangerCooldowns.begin(); it != mutableState.dangerCooldowns.end(); )
-                if (uint32(now - it->second) >= 120000) it = mutableState.dangerCooldowns.erase(it);
-                else ++it;
+            mutableState.adaptiveCooldowns.Expire(now);
             auto candidates = mutableState.liveCache.Guids();
             ObjectGuid const owned = AI_VALUE(LootObject, "loot target").guid;
             auto owner = std::find(candidates.begin(), candidates.end(), owned);
@@ -156,19 +177,43 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLiveNodes(Sbrpg::FarmState& muta
                 }
                 if (runtimeSettings.dangerScreening && guid != owned)
                 {
-                    if (mutableState.dangerCooldowns.count(guid)) continue;
+                    if (mutableState.adaptiveCooldowns.Active(guid.GetCounter(), now)) continue;
                     if (!Sbrpg::Safety::DangerEvaluator::Allows(bot, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ()))
                     {
-                        if (mutableState.dangerCooldowns.size() < 256) mutableState.dangerCooldowns[guid] = now;
+                        mutableState.adaptiveCooldowns.Set(guid.GetCounter(), Sbrpg::Awareness::CooldownReason::Danger, now, 120000);
                         SetPhase(mutableState, Sbrpg::FarmPhase::Waiting, "Nearby node looks unsafe. Temporarily skipping it.");
                         Debug(bot, Acore::StringFormat("danger node rejected: spawn {}, entry {}", go->GetSpawnId(), go->GetEntry()));
                         continue;
                     }
                 }
                 bool const reroutingToLiveNode = mutableState.currentSpawn != 0;
+                if (reroutingToLiveNode && runtimeSettings.adaptiveOrdering)
+                {
+                    auto current = std::find_if(mutableState.route.begin(), mutableState.route.end(),
+                        [&mutableState](Sbrpg::RoutePoint const& point) { return point.spawn == mutableState.currentSpawn; });
+                    if (current != mutableState.route.end())
+                    {
+                        float const currentDistance = bot->GetExactDist(current->x, current->y, current->z);
+                        float const candidateDistance = bot->GetDistance(go);
+                        uint32 const alternates = mutableState.liveCache.Observations().size() > 0 ?
+                            static_cast<uint32>(mutableState.liveCache.Observations().size() - 1) : 0;
+                        float const currentGeometry = mutableState.pathGeometryCache.count(current->spawn) ?
+                            Sbrpg::Awareness::GeometryPenalty(mutableState.pathGeometryCache[current->spawn], alternates) : 0.0f;
+                        float const candidateGeometry = mutableState.pathGeometryCache.count(go->GetSpawnId()) ?
+                            Sbrpg::Awareness::GeometryPenalty(mutableState.pathGeometryCache[go->GetSpawnId()], alternates) : 0.0f;
+                        float const currentCost = mutableState.routeEvidence.Cost(current->spawn, currentDistance,
+                            current->z - bot->GetPositionZ(), now) + currentGeometry;
+                        float const candidateCost = mutableState.routeEvidence.Cost(go->GetSpawnId(), candidateDistance,
+                            go->GetPositionZ() - bot->GetPositionZ(), now) + candidateGeometry;
+                        if (!Sbrpg::Awareness::ShouldSwitchObjective(mutableState.committedSpawnSinceMs,
+                            currentCost, candidateCost, now))
+                            continue;
+                    }
+                }
                 if (reroutingToLiveNode)
                 {
                     mutableState.currentSpawn = 0;
+                    mutableState.committedSpawnSinceMs = now;
                     mutableState.step.valid = false;
                     mutableState.stepIssued = false;
                     mutableState.targetSinceMs = 0;
@@ -293,6 +338,11 @@ std::optional<bool> SelfbotRpgFarmAction::HandleLiveNodes(Sbrpg::FarmState& muta
                 }
                 else
                     SetPhase(mutableState, Sbrpg::FarmPhase::Looting, "Gathering node.");
+                // Keep stock LootAction authoritative, but invoke it only for
+                // this exact SBRPG-selected node. The broad stock loot
+                // strategy is suspended for node runs to avoid unrelated herb
+                // and gameobject detours.
+                botAI->DoSpecificAction("loot", Event(), true);
                 mutableState.currentSpawn = 0;
                 mutableState.pendingGatherNode = ObjectGuid::Empty;
                 mutableState.pendingGatherSinceMs = 0;

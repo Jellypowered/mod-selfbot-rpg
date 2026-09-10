@@ -2,6 +2,7 @@
 #include "Core/FeatureAvailability.h"
 #include <cstdint>
 #include "Safety/DangerPolicy.h"
+#include "Movement/Spline/MoveSplineInitArgs.h"
 class Player;
 namespace Sbrpg::Safety
 {
@@ -20,5 +21,8 @@ public:
     static Risk Evaluate(Player* player, float x, float y, float z);
     static bool Allows(Player* player, float x, float y, float z);
     static bool AllowsSegment(Player* player, float x, float y, float z);
+    // Samples only edges supplied by a validated mmap corridor; it never
+    // substitutes a direct line to the destination for the actual route.
+    static bool AllowsCorridor(Player* player, Movement::PointsArray const& corridor);
 };
 }
